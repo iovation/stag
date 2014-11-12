@@ -21,7 +21,7 @@ func (t *TimeSlice) Create(m *Metric) {
 	t.Epoch = m.Epoch
 	// README: Keep me in sync with the time under the Add method
 	// TODO: Make this configurable
-	t.TTL = time.NewTimer(10 * time.Second)
+	t.TTL = time.NewTimer(10 * time.Second) // TODO: Make this configurable
 	t.Values = make([]float64, 10)
 	t.Add(m.Value)
 }
@@ -89,23 +89,14 @@ func (s *SliceContainer) Create(m *Metric) {
 				// Now iterate over each active slice
 				for _, Slice := range s.ActiveSlices {
 					// TODO: Handle these calculations via graphite output
-					go func() {
-						v := make([]float64, len(s.SliceMap[Slice].Values))
-						copy(v, s.SliceMap[Slice].Values)
-						_ = MetricCalculator(AverageContents{values: v})
-					}()
-					go func() {
-						v := make([]float64, len(s.SliceMap[Slice].Values))
-						copy(v, s.SliceMap[Slice].Values)
-						_ = MetricCalculator(CountContents{values: v})
-					}()
+					_ = MetricCalculator(AverageContents{values: s.SliceMap[Slice].Values})
+					_ = MetricCalculator(CountContents{values: s.SliceMap[Slice].Values})
 					// fmt.Println("Average of all values is ", a.Value())
 					// fmt.Println("Count of all values is ", strconv.FormatFloat(c.Value(), 'f', 2, 64))
 
 					// Remove these slices from the active list
 					delete(s.ActiveSlices, Slice)
 				}
-				//	TODO: Implement TTL sweep here.  Maybe just do a sweep every second?
 			}
 			// fmt.Println("SliceContainer.Create\tFinished inner loop")
 		}
@@ -138,7 +129,7 @@ func randSeq(n int) string {
 }
 
 func main() {
-	MetricsIn := make(chan *Metric)
+	MetricsIn := make(chan *Metric, 100)
 
 	go func() {
 		MetricMap := make(map[string]*SliceContainer)
@@ -150,6 +141,7 @@ func main() {
 				// fmt.Println(metric.Name + "." + strconv.Itoa(metric.Epoch))
 
 				_, present := MetricMap[metric.Name]
+				// Do all the stuff to initalize the new Metric
 				if present != true {
 					// fmt.Println("Metric not present in MetricMap, creating a new SliceContainer")
 					// Create a new TimeSlice for that epoch
@@ -157,8 +149,8 @@ func main() {
 					MetricMap[metric.Name].Name = metric.Name
 					MetricMap[metric.Name].SliceMap = make(map[int]*TimeSlice)
 					MetricMap[metric.Name].ActiveSlices = make(map[int]int)
-					MetricMap[metric.Name].SubmitTicker = time.NewTicker(time.Duration(2 * time.Second))
-					MetricMap[metric.Name].Input = make(chan *Metric, 1000)
+					MetricMap[metric.Name].SubmitTicker = time.NewTicker(time.Duration(2 * time.Second)) // TODO: Make this configurable
+					MetricMap[metric.Name].Input = make(chan *Metric, 100)
 					// fmt.Println("SliceContainer initalized")
 					MetricMap[metric.Name].Create(metric)
 					// fmt.Println("SliceContainer Created")
@@ -167,9 +159,15 @@ func main() {
 				if Epresent != true {
 					MetricMap[metric.Name].SliceMap[metric.Epoch] = new(TimeSlice)
 					MetricMap[metric.Name].SliceMap[metric.Epoch].Create(metric)
+					go func() { // Fire off a TTL watcher for the new Epoch
+						<-MetricMap[metric.Name].SliceMap[metric.Epoch].TTL.C
+						delete(MetricMap[metric.Name].SliceMap, metric.Epoch)
+					}()
 				}
-				// fmt.Println("Passing Input to SliceMap")
-				MetricMap[metric.Name].Input <- metric
+				go func() {
+					// fmt.Println("Passing Input to SliceMap")
+					MetricMap[metric.Name].Input <- metric
+				}()
 			}
 		}
 	}()
@@ -185,5 +183,5 @@ func main() {
 		// fmt.Println("Passed in testMetric")
 	}
 	fmt.Println(time.Since(StartTime))
-	time.Sleep(11 * time.Second) // Sleep 11 seconds so we have a chance to calculate and TTL
+	time.Sleep(15 * time.Second) // Sleep 11 seconds so we have a chance to calculate and TTL
 }
