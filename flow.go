@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"regexp"
 	"strconv"
+	// "strings"
 	"syscall"
 	"time"
 )
@@ -27,14 +28,13 @@ var signalchan chan os.Signal
 var (
 	serviceAddress  = flag.String("address", ":8125", "UDP service address")
 	graphiteAddress = flag.String("graphite", "127.0.0.1:2003", "Graphite service address (or - to disable)")
+	graphitePrefix  = flag.String("metric-prefix", "", "Default Graphite Prefix")
 	flushInterval   = flag.Int("flush-interval", 2, "Flush interval (seconds)")
 	defaultTTL      = flag.Int("default-ttl", 10, "Default TTL")
 	debug           = flag.Bool("debug", false, "print statistics sent to graphite")
 	showVersion     = flag.Bool("version", false, "print version string")
-)
-
-var (
-	MetricsIn = make(chan *Metric, 1000)
+	meanPrefix      = flag.String("mean-prefix", "mean.", "Default prefix for means")
+	countPrefix     = flag.String("count-prefix", "count.", "Default prefix for counts")
 )
 
 // Type for a single incoming metric
@@ -43,6 +43,11 @@ type Metric struct {
 	Value float64 // Values of events for this period
 	Epoch uint64  // epoch of time slice (i.e. events happened here)
 }
+
+var (
+	MetricsIn   = make(chan *Metric, 1000)
+	GraphiteOut = make(chan string, 1000)
+)
 
 // Slice of metric data for a given period of time
 type TimeSlice struct {
@@ -72,11 +77,11 @@ type MetricCalculator interface {
 	Value() float64
 }
 
-type AverageContents struct {
+type MeanContents struct {
 	values []float64
 }
 
-func (a AverageContents) Value() float64 {
+func (a MeanContents) Value() float64 {
 	sum := float64(0.0)
 	length := len(a.values)
 	for i := 0; i < length; i++ {
@@ -109,7 +114,7 @@ func (s *SliceContainer) Create(m *Metric) {
 			case i := <-s.Input:
 				s.Add(i)
 				s.ActiveSlices[i.Epoch] = i.Epoch
-			case <-s.SubmitTicker.C:
+			case <-s.SubmitTicker.C: //TODO: Do we want a goroutine/ticker for each slice (to parallelize) or is this good enough?
 				if len(s.ActiveSlices) == 0 {
 					break
 				} // Break if there's no data yet.
@@ -132,10 +137,15 @@ func (s *SliceContainer) Add(m *Metric) {
 
 // TODO: Handle these calculations via graphite output
 func submit(Slice *TimeSlice) {
-	a := MetricCalculator(AverageContents{values: Slice.Values})
+	// Means
+	a := MetricCalculator(MeanContents{values: Slice.Values})
+	GraphiteOut <- fmt.Sprintf("%s%s %f %d\n", *meanPrefix, Slice.Name, a.Value(), Slice.Epoch)
+
+	// Counts
 	c := MetricCalculator(CountContents{values: Slice.Values})
-	fmt.Println("Average of all values is ", a.Value())
-	fmt.Println("Count of all values is ", strconv.FormatFloat(c.Value(), 'f', 2, 64))
+	GraphiteOut <- fmt.Sprintf("%s%s %f %d\n", *countPrefix, Slice.Name, c.Value(), Slice.Epoch)
+
+	// TODO: Buckets
 }
 
 // Grabbed from stasdaemon.go
@@ -206,6 +216,36 @@ func udpListener() {
 	}
 }
 
+func SubmitToGraphite() {
+	client, err := net.Dial("tcp", *graphiteAddress)
+	if err != nil {
+		log.Printf("Error dialing %s %s", *graphiteAddress, err.Error())
+		if *debug == false {
+			return
+		} else {
+			log.Printf("WARNING: in debug mode. resetting counters even though connection to graphite failed")
+		}
+	} else {
+		defer client.Close()
+	}
+
+	numStats := 0
+	// now := time.Now().Unix()
+
+	for {
+		select {
+		case datain := <-GraphiteOut:
+			buffer := bytes.NewBuffer([]byte{})
+			fmt.Fprintf(buffer, "%s%s", *graphitePrefix, datain)
+			data := buffer.Bytes()
+			if client != nil {
+				log.Printf("sent %d stats to %s", numStats, *graphiteAddress)
+				client.Write(data)
+			}
+		}
+	}
+}
+
 func main() {
 	flag.Parse()
 	if *showVersion {
@@ -225,7 +265,6 @@ func main() {
 				//TODO: Deal with submitting metrics before shutting down
 				return
 			case metric := <-MetricsIn:
-				fmt.Println(metric)
 				_, present := MetricMap[metric.Name]
 				// Do all the stuff to initalize the new Metric
 				if present != true {
@@ -245,6 +284,7 @@ func main() {
 					MetricMap[metric.Name].SliceMap[metric.Epoch].Create(metric)
 					go func() { // Fire off a TTL watcher for the new Epoch
 						<-MetricMap[metric.Name].SliceMap[metric.Epoch].TTL.C
+						// submit(MetricMap[metric.Name].SliceMap[metric.Epoch])
 						delete(MetricMap[metric.Name].SliceMap, metric.Epoch)
 						fmt.Println("TTL Expired for: ", metric.Epoch)
 					}()
@@ -256,5 +296,6 @@ func main() {
 		}
 	}()
 
+	go SubmitToGraphite()
 	udpListener()
 }
