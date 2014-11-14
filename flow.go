@@ -1,17 +1,54 @@
 package main
 
 import (
+	"bytes"
+	"flag"
 	"fmt"
-	"math/rand"
-	// "strconv"
+	"log"
+	"net"
+	"os"
+	"os/signal"
+	"regexp"
+	"strconv"
+	"syscall"
 	"time"
 )
+
+const VERSION = "0.0"
+
+var signalchan chan os.Signal
+
+// TODO: A bunch of these flags should get turned into config file params.
+//		Something in the same idea as what Graphite does for metric wildcards
+//		seems like it'd make a lot of sense.  Config should include what
+//		kinds of output are expected for each kind of metric (count,
+//		throughput, histogram, etc.) as well as what prefix each metric type
+//		should get.
+var (
+	serviceAddress  = flag.String("address", ":8125", "UDP service address")
+	graphiteAddress = flag.String("graphite", "127.0.0.1:2003", "Graphite service address (or - to disable)")
+	flushInterval   = flag.Int("flush-interval", 2, "Flush interval (seconds)")
+	defaultTTL      = flag.Int("default-ttl", 10, "Default TTL")
+	debug           = flag.Bool("debug", false, "print statistics sent to graphite")
+	showVersion     = flag.Bool("version", false, "print version string")
+)
+
+var (
+	MetricsIn = make(chan *Metric, 1000)
+)
+
+// Type for a single incoming metric
+type Metric struct {
+	Name  string  // Graphite name of the metric
+	Value float64 // Values of events for this period
+	Epoch uint64  // epoch of time slice (i.e. events happened here)
+}
 
 // Slice of metric data for a given period of time
 type TimeSlice struct {
 	Name   string      // Graphite name of the metric
 	Values []float64   // Values of events for this period
-	Epoch  int         // epoch of time slice (i.e. events happened here)
+	Epoch  uint64      // epoch of time slice (i.e. events happened here)
 	TTL    *time.Timer // TTL timer for the slice
 }
 
@@ -20,18 +57,15 @@ func (t *TimeSlice) Create(m *Metric) {
 	t.Name = m.Name
 	t.Epoch = m.Epoch
 	// README: Keep me in sync with the time under the Add method
-	// TODO: Make this configurable
-	t.TTL = time.NewTimer(10 * time.Second) // TODO: Make this configurable
-	t.Values = make([]float64, 10)
-	t.Add(m.Value)
+	t.TTL = time.NewTimer(time.Duration(*defaultTTL) * time.Second)
+	t.Values = make([]float64, 0) // TODO: Figure out if pre-allocating more stuff here would help performance (and how to implement that)
 }
 
 // Add a value to a TimeSlice
 func (t *TimeSlice) Add(v float64) {
 	t.Values = append(t.Values, v)
 	// NOTE: Keep me in sync with the time under the Create method
-	// TODO: Make this configurable
-	t.TTL.Reset(10 * time.Second)
+	t.TTL.Reset(time.Duration(*defaultTTL) * time.Second)
 }
 
 type MetricCalculator interface {
@@ -60,27 +94,21 @@ func (c CountContents) Value() float64 {
 }
 
 // A slice container that contains a ticker for iteration
-// TODO: mutex per slice container that prevents the main loop from adding metrics to the timeslice list or calculating values from the timeslice list.
-// 		Goroutine in Create will do submission handling
 type SliceContainer struct {
-	Name         string             // Graphite name of the metric
-	SliceMap     map[int]*TimeSlice // Time Slices for this metric
-	ActiveSlices map[int]int        // Set of *active* (timeslices are removed from this after they've been submitted, and re-added after new data comes in)
-	SubmitTicker *time.Ticker       // Ticker for submission
-	Input        chan *Metric       // Input channel for new Metrics
+	Name         string                // Graphite name of the metric
+	SliceMap     map[uint64]*TimeSlice // Time Slices for this metric
+	ActiveSlices map[uint64]uint64     // Set of *active* (timeslices are removed from this after they've been submitted, and re-added after new data comes in)
+	SubmitTicker *time.Ticker          // Ticker for submission
+	Input        chan *Metric          // Input channel for new Metrics
 }
 
 func (s *SliceContainer) Create(m *Metric) {
 	go func() {
-		// fmt.Println("SliceContainer.Create\tInner loop starting")
 		for {
 			select {
 			case i := <-s.Input:
-				// fmt.Println("SliceContainer.Create\tGot input from inner channel")
 				s.Add(i)
-				// fmt.Println("SliceContainer.Create\tAdded value to Slice")
 				s.ActiveSlices[i.Epoch] = i.Epoch
-				// fmt.Println("SliceContainer.Create\tAdded value to active slices")
 			case <-s.SubmitTicker.C:
 				if len(s.ActiveSlices) == 0 {
 					break
@@ -88,73 +116,129 @@ func (s *SliceContainer) Create(m *Metric) {
 
 				// Now iterate over each active slice
 				for _, Slice := range s.ActiveSlices {
-					// TODO: Handle these calculations via graphite output
-					_ = MetricCalculator(AverageContents{values: s.SliceMap[Slice].Values})
-					_ = MetricCalculator(CountContents{values: s.SliceMap[Slice].Values})
-					// fmt.Println("Average of all values is ", a.Value())
-					// fmt.Println("Count of all values is ", strconv.FormatFloat(c.Value(), 'f', 2, 64))
-
+					submit(s.SliceMap[Slice])
 					// Remove these slices from the active list
 					delete(s.ActiveSlices, Slice)
 				}
 			}
-			// fmt.Println("SliceContainer.Create\tFinished inner loop")
 		}
 	}()
 }
 
 func (s *SliceContainer) Add(m *Metric) {
-	// fmt.Println("SliceContainer.Add\tAdding Value")
 	s.SliceMap[m.Epoch].Add(m.Value)
-	// fmt.Println("SliceContainer.Add\tAdding Adding epoch to active list")
 	s.ActiveSlices[m.Epoch] = m.Epoch
 }
 
-// Type for a single incoming metric
-type Metric struct {
-	Name  string  // Graphite name of the metric
-	Value float64 // Values of events for this period
-	Epoch int     // epoch of time slice (i.e. events happened here)
+// TODO: Handle these calculations via graphite output
+func submit(Slice *TimeSlice) {
+	a := MetricCalculator(AverageContents{values: Slice.Values})
+	c := MetricCalculator(CountContents{values: Slice.Values})
+	fmt.Println("Average of all values is ", a.Value())
+	fmt.Println("Count of all values is ", strconv.FormatFloat(c.Value(), 'f', 2, 64))
 }
 
-// Random strings
-var letters = []rune("abcdefghijklmnopqrstuvwxyz")
+// Grabbed from stasdaemon.go
+func parseMessage(buf *bytes.Buffer) []*Metric {
+	// Example: some.metric:1.24g:1415833364
+	var packetRegexp = regexp.MustCompile("^([^:]+):([0-9.]+)(g)@([0-9]+)\n$")
+	var output []*Metric
+	var valueErr, epochErr, err error
+	var line string
+	for {
+		if err != nil {
+			break
+		}
+		line, err = buf.ReadString('\n')
+		if line != "" {
+			item := packetRegexp.FindStringSubmatch(line)
+			if len(item) == 0 {
+				continue
+			}
 
-func randSeq(n int) string {
-	b := make([]rune, n)
-	for i := range b {
-		b[i] = letters[rand.Intn(len(letters))]
+			var value float64
+			var epoch uint64
+			modifier := item[3]
+			switch modifier {
+			default: // Assuming a g(gauge) modifier for now
+				value, valueErr = strconv.ParseFloat(item[2], 64)
+				if valueErr != nil {
+					log.Printf("ERROR: failed to ParseFloat %s - %s", item[2], valueErr.Error())
+				}
+				epoch, epochErr = strconv.ParseUint(item[4], 10, 64)
+				if epochErr != nil {
+					log.Printf("ERROR: failed to ParseInt %s - %s", item[4], epochErr.Error())
+				}
+			}
+
+			metric := &Metric{
+				Name:  item[1],
+				Value: value,
+				Epoch: epoch,
+			}
+			output = append(output, metric)
+		}
 	}
-	return string(b)
+	return output
+}
+
+// Grabbed from stasdaemon.go
+func udpListener() {
+	address, _ := net.ResolveUDPAddr("udp", *serviceAddress)
+	log.Printf("Listening on %s/udp", address)
+	listener, err := net.ListenUDP("udp", address)
+	if err != nil {
+		log.Fatalf("ListenAndServe: %s", err.Error())
+	}
+	defer listener.Close()
+	message := make([]byte, 512)
+	for {
+		n, remaddr, err := listener.ReadFrom(message)
+		if err != nil {
+			log.Printf("error reading from %v %s", remaddr, err.Error())
+			continue
+		}
+		buf := bytes.NewBuffer(message[0:n])
+		packets := parseMessage(buf)
+		for _, p := range packets {
+			MetricsIn <- p
+		}
+	}
 }
 
 func main() {
-	MetricsIn := make(chan *Metric, 100)
+	flag.Parse()
+	if *showVersion {
+		fmt.Printf("statflow v%s\n", VERSION)
+		return
+	}
+	signalchan = make(chan os.Signal, 1)
+	signal.Notify(signalchan, syscall.SIGTERM)
 
 	go func() {
 		MetricMap := make(map[string]*SliceContainer)
-		// fmt.Println("Got a MetricMap")
 
 		for {
 			select {
+			case sig := <-signalchan:
+				fmt.Printf("!! Caught signal %d... shutting down\n", sig)
+				//TODO: Deal with submitting metrics before shutting down
+				return
 			case metric := <-MetricsIn:
-				// fmt.Println(metric.Name + "." + strconv.Itoa(metric.Epoch))
-
+				fmt.Println(metric)
 				_, present := MetricMap[metric.Name]
 				// Do all the stuff to initalize the new Metric
 				if present != true {
-					// fmt.Println("Metric not present in MetricMap, creating a new SliceContainer")
 					// Create a new TimeSlice for that epoch
 					MetricMap[metric.Name] = new(SliceContainer)
 					MetricMap[metric.Name].Name = metric.Name
-					MetricMap[metric.Name].SliceMap = make(map[int]*TimeSlice)
-					MetricMap[metric.Name].ActiveSlices = make(map[int]int)
-					MetricMap[metric.Name].SubmitTicker = time.NewTicker(time.Duration(2 * time.Second)) // TODO: Make this configurable
+					MetricMap[metric.Name].SliceMap = make(map[uint64]*TimeSlice)
+					MetricMap[metric.Name].ActiveSlices = make(map[uint64]uint64)
+					MetricMap[metric.Name].SubmitTicker = time.NewTicker(time.Duration(*flushInterval) * time.Second)
 					MetricMap[metric.Name].Input = make(chan *Metric, 100)
-					// fmt.Println("SliceContainer initalized")
 					MetricMap[metric.Name].Create(metric)
-					// fmt.Println("SliceContainer Created")
 				}
+				// Initialize bit bits for a new epoch in a metric we're tracking
 				_, Epresent := MetricMap[metric.Name].SliceMap[metric.Epoch]
 				if Epresent != true {
 					MetricMap[metric.Name].SliceMap[metric.Epoch] = new(TimeSlice)
@@ -162,26 +246,15 @@ func main() {
 					go func() { // Fire off a TTL watcher for the new Epoch
 						<-MetricMap[metric.Name].SliceMap[metric.Epoch].TTL.C
 						delete(MetricMap[metric.Name].SliceMap, metric.Epoch)
+						fmt.Println("TTL Expired for: ", metric.Epoch)
 					}()
 				}
-				go func() {
-					// fmt.Println("Passing Input to SliceMap")
+				go func() { // Fire off new info to this input
 					MetricMap[metric.Name].Input <- metric
 				}()
 			}
 		}
 	}()
 
-	StartTime := time.Now()
-	fmt.Println(StartTime)
-	// Generate some test data
-	for i := 0; i <= 10000000; i++ {
-		testMetric := Metric{Name: randSeq(2), Value: rand.Float64(), Epoch: rand.Intn(10)}
-		// fmt.Println("Got a test metric")
-		MetricsIn <- &testMetric
-		// time.Sleep(100 * time.Millisecond)
-		// fmt.Println("Passed in testMetric")
-	}
-	fmt.Println(time.Since(StartTime))
-	time.Sleep(15 * time.Second) // Sleep 11 seconds so we have a chance to calculate and TTL
+	udpListener()
 }
