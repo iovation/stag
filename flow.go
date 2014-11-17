@@ -26,7 +26,7 @@ var signalchan chan os.Signal
 //		throughput, histogram, etc.) as well as what prefix each metric type
 //		should get.
 var (
-	serviceAddress  = flag.String("address", ":8125", "UDP service address")
+	serviceAddress  = flag.String("address", ":8126", "UDP service address")
 	graphiteAddress = flag.String("graphite", "127.0.0.1:2003", "Graphite service address (or - to disable)")
 	graphitePrefix  = flag.String("metric-prefix", "", "Default Graphite Prefix")
 	flushInterval   = flag.Int("flush-interval", 2, "Flush interval (seconds)")
@@ -135,15 +135,14 @@ func (s *SliceContainer) Add(m *Metric) {
 	s.ActiveSlices[m.Epoch] = m.Epoch
 }
 
-// TODO: Handle these calculations via graphite output
 func submit(Slice *TimeSlice) {
 	// Means
 	a := MetricCalculator(MeanContents{values: Slice.Values})
-	GraphiteOut <- fmt.Sprintf("%s%s %f %d\n", *meanPrefix, Slice.Name, a.Value(), Slice.Epoch)
+	GraphiteOut <- fmt.Sprintf("%s%s%s %f %d\n", *graphitePrefix, *meanPrefix, Slice.Name, a.Value(), Slice.Epoch)
 
 	// Counts
 	c := MetricCalculator(CountContents{values: Slice.Values})
-	GraphiteOut <- fmt.Sprintf("%s%s %f %d\n", *countPrefix, Slice.Name, c.Value(), Slice.Epoch)
+	GraphiteOut <- fmt.Sprintf("%s%s%s %f %d\n", *graphitePrefix, *countPrefix, Slice.Name, c.Value(), Slice.Epoch)
 
 	// TODO: Buckets
 }
@@ -229,17 +228,17 @@ func SubmitToGraphite() {
 		defer client.Close()
 	}
 
-	numStats := 0
+	// numStats := 0
 	// now := time.Now().Unix()
 
 	for {
 		select {
 		case datain := <-GraphiteOut:
 			buffer := bytes.NewBuffer([]byte{})
-			fmt.Fprintf(buffer, "%s%s", *graphitePrefix, datain)
+			fmt.Fprintf(buffer, "%s", datain)
 			data := buffer.Bytes()
 			if client != nil {
-				log.Printf("sent %d stats to %s", numStats, *graphiteAddress)
+				// log.Printf("sent %d stats to %s", numStats, *graphiteAddress)
 				client.Write(data)
 			}
 		}
@@ -251,6 +250,10 @@ func main() {
 	if *showVersion {
 		fmt.Printf("statflow v%s\n", VERSION)
 		return
+	}
+
+	if *graphitePrefix != "" {
+		*graphitePrefix = fmt.Sprintf("%s.", *graphitePrefix)
 	}
 	signalchan = make(chan os.Signal, 1)
 	signal.Notify(signalchan, syscall.SIGTERM)
@@ -286,7 +289,7 @@ func main() {
 						<-MetricMap[metric.Name].SliceMap[metric.Epoch].TTL.C
 						// submit(MetricMap[metric.Name].SliceMap[metric.Epoch])
 						delete(MetricMap[metric.Name].SliceMap, metric.Epoch)
-						fmt.Println("TTL Expired for: ", metric.Epoch)
+						// fmt.Println("TTL Expired for: ", metric.Name, "@", metric.Epoch)
 					}()
 				}
 				go func() { // Fire off new info to this input
