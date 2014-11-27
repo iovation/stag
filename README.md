@@ -11,7 +11,7 @@ Metrics come into statsflow via UDP.  They're held in memory until the TTL (defa
 # Command Line Options
 
 ```
-Usage of /tmp/go-build309371040/command-line-arguments/_obj/exe/flow:
+Usage of statflow:
   -address=":8126": UDP service address
   -bucket-prefix="bucket.": Default prefix for buckets
   -count-prefix="count.": Default prefix for counts

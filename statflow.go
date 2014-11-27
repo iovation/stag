@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const VERSION = "0.0"
+const VERSION = "0.1"
 
 var signalchan chan os.Signal
 
@@ -30,7 +30,7 @@ TODO: A bunch of these flags should get turned into config file params.
 */
 var (
 	serviceAddress  = flag.String("address", ":8126", "UDP service address")
-	graphiteAddress = flag.String("graphite", "127.0.0.1:2003", "Graphite service address (or - to disable)")
+	graphiteAddress = flag.String("graphite", "127.0.0.1:2003", "Graphite service address")
 	graphitePrefix  = flag.String("metric-prefix", "", "Default Graphite Prefix")
 	flushInterval   = flag.Int("flush-interval", 2, "Flush interval (seconds)")
 	defaultTTL      = flag.Int("default-ttl", 10, "Default TTL")
@@ -276,8 +276,7 @@ func SubmitToGraphite() {
 		defer client.Close()
 	}
 
-	// numStats := 0
-	// now := time.Now().Unix()
+	//TODO: Add handling for statflow metrics
 
 	for {
 		select {
@@ -305,8 +304,6 @@ func main() {
 	}
 	signalchan = make(chan os.Signal, 1)
 	signal.Notify(signalchan, syscall.SIGTERM)
-
-	// ValueBuckets = sort.Sort(sort.Float64Slice(ValueBuckets)) // Laying the groundwork for when we take in configs
 
 	go func() {
 		MetricMap := make(map[string]*SliceContainer)
@@ -337,9 +334,7 @@ func main() {
 					MetricMap[metric.Name].SliceMap[metric.Epoch].Create(metric)
 					go func() { // Fire off a TTL watcher for the new Epoch
 						<-MetricMap[metric.Name].SliceMap[metric.Epoch].TTL.C
-						// submit(MetricMap[metric.Name].SliceMap[metric.Epoch])
 						delete(MetricMap[metric.Name].SliceMap, metric.Epoch)
-						// fmt.Println("TTL Expired for: ", metric.Name, "@", metric.Epoch)
 					}()
 				}
 				go func() { // Fire off new info to this input
