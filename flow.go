@@ -9,8 +9,9 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"sort"
 	"strconv"
-	// "strings"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -19,12 +20,14 @@ const VERSION = "0.0"
 
 var signalchan chan os.Signal
 
-// TODO: A bunch of these flags should get turned into config file params.
-//		Something in the same idea as what Graphite does for metric wildcards
-//		seems like it'd make a lot of sense.  Config should include what
-//		kinds of output are expected for each kind of metric (count,
-//		throughput, histogram, etc.) as well as what prefix each metric type
-//		should get.
+/*
+TODO: A bunch of these flags should get turned into config file params.
+		Something in the same idea as what Graphite does for metric wildcards
+		seems like it'd make a lot of sense.  Config should include what
+		kinds of output are expected for each kind of metric (count,
+		throughput, histogram, etc.) as well as what prefix each metric type
+		should get.
+*/
 var (
 	serviceAddress  = flag.String("address", ":8126", "UDP service address")
 	graphiteAddress = flag.String("graphite", "127.0.0.1:2003", "Graphite service address (or - to disable)")
@@ -35,6 +38,7 @@ var (
 	showVersion     = flag.Bool("version", false, "print version string")
 	meanPrefix      = flag.String("mean-prefix", "mean.", "Default prefix for means")
 	countPrefix     = flag.String("count-prefix", "count.", "Default prefix for counts")
+	bucketPrefix    = flag.String("bucket-prefix", "bucket.", "Default prefix for buckets")
 )
 
 // Type for a single incoming metric
@@ -45,8 +49,9 @@ type Metric struct {
 }
 
 var (
-	MetricsIn   = make(chan *Metric, 1000)
-	GraphiteOut = make(chan string, 1000)
+	MetricsIn    = make(chan *Metric, 1000)
+	GraphiteOut  = make(chan string, 1000)
+	ValueBuckets = []float64{0, 0.125, 0.5, 1, 2, 5}
 )
 
 // Slice of metric data for a given period of time
@@ -98,6 +103,42 @@ func (c CountContents) Value() float64 {
 	return float64(len(c.values))
 }
 
+type BucketResults struct {
+	buckets map[float64]float64
+}
+type BucketsAndValues struct {
+	buckets []float64
+	values  []float64
+}
+
+func BucketedResults(h BucketsAndValues) map[float64]float64 {
+	br := make(map[float64]float64)
+	sort.Float64s(h.buckets) // Sort the buckets so we can go over them small to big
+	sort.Float64s(h.values)  // Sort the values before we iterate
+
+	// iterate over the values, then iterate each bucket to see if it should fall into it's bucket
+	// TODO: Improve the default algorithm or make it something the user can choose
+	for bindex, b := range h.buckets {
+		_, bpresent := br[b]
+		if bpresent != true {
+			br[b] = 0
+		}
+		// Since we've got a sorted list of values, iterate on them and put them
+		// in the appropriate bucket
+		for _, v := range h.values {
+			if bindex+1 != len(h.buckets) {
+				if v >= b && v < h.buckets[bindex+1] {
+					br[b] += 1
+				}
+			} else if v >= b {
+				br[b] += 1
+			}
+		}
+	}
+
+	return br
+}
+
 // A slice container that contains a ticker for iteration
 type SliceContainer struct {
 	Name         string                // Graphite name of the metric
@@ -136,6 +177,7 @@ func (s *SliceContainer) Add(m *Metric) {
 }
 
 func submit(Slice *TimeSlice) {
+	// TODO: Pickle this data for Graphite.
 	// Means
 	a := MetricCalculator(MeanContents{values: Slice.Values})
 	GraphiteOut <- fmt.Sprintf("%s%s%s %f %d\n", *graphitePrefix, *meanPrefix, Slice.Name, a.Value(), Slice.Epoch)
@@ -144,11 +186,17 @@ func submit(Slice *TimeSlice) {
 	c := MetricCalculator(CountContents{values: Slice.Values})
 	GraphiteOut <- fmt.Sprintf("%s%s%s %f %d\n", *graphitePrefix, *countPrefix, Slice.Name, c.Value(), Slice.Epoch)
 
-	// TODO: Buckets
+	// Buckets
+	bv := BucketsAndValues{buckets: ValueBuckets, values: Slice.Values}
+	for bucket, count := range BucketedResults(bv) {
+		GraphiteOut <- fmt.Sprintf("%s%s%s.%s %f %d\n", *graphitePrefix, *bucketPrefix, Slice.Name, strings.Replace(strconv.FormatFloat(bucket, 'f', 3, 32), ".", "_", -1), count, Slice.Epoch)
+	}
 }
 
 // Grabbed from stasdaemon.go
 func parseMessage(buf *bytes.Buffer) []*Metric {
+	// TODO: Evaluate something like the bitly statsdaemon style bye parser:
+	// 		https://github.com/bitly/statsdaemon/commit/c1816f025d3ccec416dc11098605087a6d7e138d
 	// Example: some.metric:1.24g:1415833364
 	var packetRegexp = regexp.MustCompile("^([^:]+):([0-9.]+)(g)@([0-9]+)\n$")
 	var output []*Metric
@@ -257,6 +305,8 @@ func main() {
 	}
 	signalchan = make(chan os.Signal, 1)
 	signal.Notify(signalchan, syscall.SIGTERM)
+
+	// ValueBuckets = sort.Sort(sort.Float64Slice(ValueBuckets)) // Laying the groundwork for when we take in configs
 
 	go func() {
 		MetricMap := make(map[string]*SliceContainer)
