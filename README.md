@@ -1,6 +1,6 @@
 # statflow
 
-Don't sample.
+_Don't sample_
 
 Statflow is a tool for collecting and submitting stats, in this case to Graphite.  It also collects the timestamp at which the event occured, which makes it great for situations where you can't rely on messages arriving in order or on time.  The goal is to push this data into Graphite early and often after we receive it.
 
