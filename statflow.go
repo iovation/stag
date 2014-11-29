@@ -49,8 +49,8 @@ type Metric struct {
 }
 
 var (
-	MetricsIn    = make(chan *Metric, 1000)
-	GraphiteOut  = make(chan string, 1000)
+	MetricsIn    = make(chan *Metric, 100000)
+	GraphiteOut  = make(chan string, 100000)
 	ValueBuckets = []float64{0, 0.125, 0.5, 1, 2, 5}
 )
 
@@ -324,7 +324,7 @@ func main() {
 					MetricMap[metric.Name].SliceMap = make(map[uint64]*TimeSlice)
 					MetricMap[metric.Name].ActiveSlices = make(map[uint64]uint64)
 					MetricMap[metric.Name].SubmitTicker = time.NewTicker(time.Duration(*flushInterval) * time.Second)
-					MetricMap[metric.Name].Input = make(chan *Metric, 100)
+					MetricMap[metric.Name].Input = make(chan *Metric, 10000)
 					MetricMap[metric.Name].Create(metric)
 				}
 				// Initialize bit bits for a new epoch in a metric we're tracking
