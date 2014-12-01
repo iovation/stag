@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const VERSION = "0.1"
+const VERSION = "0.2"
 
 var signalchan chan os.Signal
 
@@ -29,7 +29,7 @@ TODO: A bunch of these flags should get turned into config file params.
 		should get.
 */
 var (
-	serviceAddress  = flag.String("address", ":8126", "UDP service address")
+	serviceAddress  = flag.String("address", "0.0.0.0:8126", "UDP service address")
 	graphiteAddress = flag.String("graphite", "127.0.0.1:2003", "Graphite service address")
 	graphitePrefix  = flag.String("metric-prefix", "", "Default Graphite Prefix")
 	flushInterval   = flag.Int("flush-interval", 2, "Flush interval (seconds)")
@@ -240,22 +240,38 @@ func parseMessage(buf *bytes.Buffer) []*Metric {
 }
 
 // Grabbed from stasdaemon.go
-func udpListener() {
-	address, _ := net.ResolveUDPAddr("udp", *serviceAddress)
-	log.Printf("Listening on %s/udp", address)
-	listener, err := net.ListenUDP("udp", address)
+func tcpListener() {
+	// address, _ := net.ResolveUDPAddr("tcp", *serviceAddress)
+	log.Printf("Listening on %s/tcp", *serviceAddress)
+	listener, err := net.Listen("tcp", *serviceAddress)
 	if err != nil {
-		log.Fatalf("ListenAndServe: %s", err.Error())
+		log.Fatalf("Error starting TCP listener: %s", err.Error())
 	}
 	defer listener.Close()
-	message := make([]byte, 512)
+	// message := make([]byte, 512)
 	for {
-		n, remaddr, err := listener.ReadFrom(message)
+		// Listen for an incoming connection.
+		conn, err := listener.Accept()
 		if err != nil {
-			log.Printf("error reading from %v %s", remaddr, err.Error())
-			continue
+			fmt.Println("Error accepting: ", err.Error())
+			os.Exit(1)
 		}
-		buf := bytes.NewBuffer(message[0:n])
+
+		go handleConnection(conn)
+	}
+}
+
+func handleConnection(conn net.Conn) {
+	defer conn.Close()
+	message := make([]byte, 512)
+
+	for {
+		// Read the incoming connection into the buffer.
+		bytesRead, err := conn.Read(message)
+		if err != nil {
+			return
+		}
+		buf := bytes.NewBuffer(message[0:bytesRead])
 		packets := parseMessage(buf)
 		for _, p := range packets {
 			MetricsIn <- p
@@ -284,6 +300,14 @@ func SubmitToGraphite() {
 			buffer := bytes.NewBuffer([]byte{})
 			fmt.Fprintf(buffer, "%s", datain)
 			data := buffer.Bytes()
+
+			// TEST CODE
+			reg := regexp.MustCompile(`\.\.`)
+			if reg.FindString(datain) != "" {
+				fmt.Println(datain)
+			}
+			// END TEST CODE
+
 			if client != nil {
 				// log.Printf("sent %d stats to %s", numStats, *graphiteAddress)
 				client.Write(data)
@@ -327,11 +351,13 @@ func main() {
 					MetricMap[metric.Name].Input = make(chan *Metric, 10000)
 					MetricMap[metric.Name].Create(metric)
 				}
+
 				// Initialize bit bits for a new epoch in a metric we're tracking
 				_, Epresent := MetricMap[metric.Name].SliceMap[metric.Epoch]
 				if Epresent != true {
 					MetricMap[metric.Name].SliceMap[metric.Epoch] = new(TimeSlice)
 					MetricMap[metric.Name].SliceMap[metric.Epoch].Create(metric)
+
 					go func() { // Fire off a TTL watcher for the new Epoch
 						<-MetricMap[metric.Name].SliceMap[metric.Epoch].TTL.C
 						delete(MetricMap[metric.Name].SliceMap, metric.Epoch)
@@ -345,5 +371,5 @@ func main() {
 	}()
 
 	go SubmitToGraphite()
-	udpListener()
+	tcpListener()
 }
