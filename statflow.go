@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -40,6 +41,7 @@ var (
 	meanPrefix      = flag.String("mean-prefix", "mean.", "Default prefix for means")
 	countPrefix     = flag.String("count-prefix", "count.", "Default prefix for counts")
 	bucketPrefix    = flag.String("bucket-prefix", "bucket.", "Default prefix for buckets")
+	maxProcs        = flag.Int("maxprocs", 2, "Default max number of OS processes")
 )
 
 // Type for a single incoming metric
@@ -239,6 +241,7 @@ func parseMessage(line string) []*Metric {
 	// TODO: Evaluate something like the bitly statsdaemon style bye parser:
 	// 		https://github.com/bitly/statsdaemon/commit/c1816f025d3ccec416dc11098605087a6d7e138d
 	// Example: some.metric:1.24g:1415833364
+	// TODO: Add a graphite prefix to the metric name
 	var packetRegexp = regexp.MustCompile("^([^:]+):([0-9.]+)(g)@([0-9]+)$")
 	var output []*Metric
 	var valueErr, epochErr error
@@ -286,7 +289,7 @@ func SubmitToGraphite() {
 		defer client.Close()
 	}
 
-	//TODO: Add handling for statflow metrics
+	//TODO: Add handling for statflow (internal) metrics
 
 	for {
 		select {
@@ -316,6 +319,8 @@ func main() {
 		fmt.Printf("statflow v%s\n", VERSION)
 		return
 	}
+
+	runtime.GOMAXPROCS(*maxProcs)
 
 	if *graphitePrefix != "" {
 		*graphitePrefix = fmt.Sprintf("%s.", *graphitePrefix)
