@@ -357,6 +357,7 @@ func main() {
 					MetricMap[metric.Name].SliceMap[metric.Epoch] = new(TimeSlice)
 					MetricMap[metric.Name].SliceMap[metric.Epoch].Create(metric)
 
+					//TODO: TTL out metrics in the metric map to help free memory
 					go func() { // Fire off a TTL watcher for the new Epoch
 						<-MetricMap[metric.Name].SliceMap[metric.Epoch].TTL.C
 						delete(MetricMap[metric.Name].SliceMap, metric.Epoch)
