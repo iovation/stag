@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"flag"
 	"fmt"
@@ -194,52 +195,6 @@ func submit(Slice *TimeSlice) {
 }
 
 // Grabbed from stasdaemon.go
-func parseMessage(buf *bytes.Buffer) []*Metric {
-	// TODO: Evaluate something like the bitly statsdaemon style bye parser:
-	// 		https://github.com/bitly/statsdaemon/commit/c1816f025d3ccec416dc11098605087a6d7e138d
-	// Example: some.metric:1.24g:1415833364
-	var packetRegexp = regexp.MustCompile("^([^:]+):([0-9.]+)(g)@([0-9]+)\n$")
-	var output []*Metric
-	var valueErr, epochErr, err error
-	var line string
-	for {
-		if err != nil {
-			break
-		}
-		line, err = buf.ReadString('\n')
-		if line != "" {
-			item := packetRegexp.FindStringSubmatch(line)
-			if len(item) == 0 {
-				continue
-			}
-
-			var value float64
-			var epoch uint64
-			modifier := item[3]
-			switch modifier {
-			default: // Assuming a g(gauge) modifier for now
-				value, valueErr = strconv.ParseFloat(item[2], 64)
-				if valueErr != nil {
-					log.Printf("ERROR: failed to ParseFloat %s - %s", item[2], valueErr.Error())
-				}
-				epoch, epochErr = strconv.ParseUint(item[4], 10, 64)
-				if epochErr != nil {
-					log.Printf("ERROR: failed to ParseInt %s - %s", item[4], epochErr.Error())
-				}
-			}
-
-			metric := &Metric{
-				Name:  item[1],
-				Value: value,
-				Epoch: epoch,
-			}
-			output = append(output, metric)
-		}
-	}
-	return output
-}
-
-// Grabbed from stasdaemon.go
 func tcpListener() {
 	// address, _ := net.ResolveUDPAddr("tcp", *serviceAddress)
 	log.Printf("Listening on %s/tcp", *serviceAddress)
@@ -263,20 +218,59 @@ func tcpListener() {
 
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
-	message := make([]byte, 512)
 
-	for {
-		// Read the incoming connection into the buffer.
-		bytesRead, err := conn.Read(message)
-		if err != nil {
-			return
+	scanner := bufio.NewScanner(conn)
+	for scanner.Scan() {
+		// Read the incoming data from the string
+		line := scanner.Text()
+		if len(line) == 0 {
+			continue
 		}
-		buf := bytes.NewBuffer(message[0:bytesRead])
-		packets := parseMessage(buf)
+		// Pass the line on to the parser
+		packets := parseMessage(line)
 		for _, p := range packets {
 			MetricsIn <- p
 		}
 	}
+}
+
+// Grabbed from stasdaemon.go
+func parseMessage(line string) []*Metric {
+	// TODO: Evaluate something like the bitly statsdaemon style bye parser:
+	// 		https://github.com/bitly/statsdaemon/commit/c1816f025d3ccec416dc11098605087a6d7e138d
+	// Example: some.metric:1.24g:1415833364
+	var packetRegexp = regexp.MustCompile("^([^:]+):([0-9.]+)(g)@([0-9]+)$")
+	var output []*Metric
+	var valueErr, epochErr error
+	if line != "" {
+		item := packetRegexp.FindStringSubmatch(line)
+		if len(item) != 5 {
+			// fmt.Println(len(item))
+			return output
+		}
+		var value float64
+		var epoch uint64
+		modifier := item[3]
+		switch modifier {
+		default: // Assuming a g(gauge) modifier for now
+			value, valueErr = strconv.ParseFloat(item[2], 64)
+			if valueErr != nil {
+				log.Printf("ERROR: failed to ParseFloat %s - %s", item[2], valueErr.Error())
+			}
+			epoch, epochErr = strconv.ParseUint(item[4], 10, 64)
+			if epochErr != nil {
+				log.Printf("ERROR: failed to ParseInt %s - %s", item[4], epochErr.Error())
+			}
+		}
+
+		metric := &Metric{
+			Name:  item[1],
+			Value: value,
+			Epoch: epoch,
+		}
+		output = append(output, metric)
+	}
+	return output
 }
 
 func SubmitToGraphite() {
