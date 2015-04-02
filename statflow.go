@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"github.com/davecheney/profile"
 	"log"
 	"net"
 	"os"
@@ -29,6 +30,8 @@ TODO: A bunch of these flags should get turned into config file params.
 		kinds of output are expected for each kind of metric (count,
 		throughput, histogram, etc.) as well as what prefix each metric type
 		should get.
+TODO: We should make use of pprof's HTTP server option to expose stats on running
+		instances: https://golang.org/pkg/net/http/pprof/
 */
 var (
 	serviceAddress  = flag.String("address", "0.0.0.0:8126", "UDP service address")
@@ -42,6 +45,7 @@ var (
 	countPrefix     = flag.String("count-prefix", "count.", "Default prefix for counts")
 	bucketPrefix    = flag.String("bucket-prefix", "bucket.", "Default prefix for buckets")
 	maxProcs        = flag.Int("maxprocs", 2, "Default max number of OS processes")
+	profileMode     = flag.Bool("profilemode", false, "Turn on app profiling")
 )
 
 // Type for a single incoming metric
@@ -322,6 +326,14 @@ func main() {
 
 	runtime.GOMAXPROCS(*maxProcs)
 
+	if *profileMode {
+		profileCfg := profile.Config{
+			CPUProfile: true,
+			MemProfile: true,
+		}
+		defer profile.Start(&profileCfg).Stop()
+	}
+
 	if *graphitePrefix != "" {
 		*graphitePrefix = fmt.Sprintf("%s.", *graphitePrefix)
 	}
@@ -330,6 +342,7 @@ func main() {
 
 	go func() {
 		MetricMap := make(map[string]*SliceContainer)
+		/* TODO: Add MetricMap cleanup functionality */
 
 		for {
 			select {
@@ -347,7 +360,7 @@ func main() {
 					MetricMap[metric.Name].SliceMap = make(map[uint64]*TimeSlice)
 					MetricMap[metric.Name].ActiveSlices = make(map[uint64]uint64)
 					MetricMap[metric.Name].SubmitTicker = time.NewTicker(time.Duration(*flushInterval) * time.Second)
-					MetricMap[metric.Name].Input = make(chan *Metric, 10000)
+					MetricMap[metric.Name].Input = make(chan *Metric)
 					MetricMap[metric.Name].Create(metric)
 				}
 
