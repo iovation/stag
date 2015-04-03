@@ -50,9 +50,10 @@ var (
 
 // Type for a single incoming metric
 type Metric struct {
-	Name  string  // Graphite name of the metric
-	Value float64 // Values of events for this period
-	Epoch uint64  // epoch of time slice (i.e. events happened here)
+	Prefix string  // The Graphite prefix of the metric
+	Name   string  // Graphite name of the metric
+	Value  float64 // Values of events for this period
+	Epoch  uint64  // epoch of time slice (i.e. events happened here)
 }
 
 var (
@@ -63,6 +64,7 @@ var (
 
 // Slice of metric data for a given period of time
 type TimeSlice struct {
+	Prefix string      // Graphite prefix for the metric
 	Name   string      // Graphite name of the metric
 	Values []float64   // Values of events for this period
 	Epoch  uint64      // epoch of time slice (i.e. events happened here)
@@ -71,6 +73,7 @@ type TimeSlice struct {
 
 // Used to create a new TimeSlice
 func (t *TimeSlice) Create(m *Metric) {
+	t.Prefix = m.Prefix
 	t.Name = m.Name
 	t.Epoch = m.Epoch
 	// README: Keep me in sync with the time under the Add method
@@ -187,16 +190,16 @@ func submit(Slice *TimeSlice) {
 	// TODO: Pickle this data for Graphite.
 	// Means
 	a := MetricCalculator(MeanContents{values: Slice.Values})
-	GraphiteOut <- fmt.Sprintf("%s%s%s %f %d\n", *graphitePrefix, *meanPrefix, Slice.Name, a.Value(), Slice.Epoch)
+	GraphiteOut <- fmt.Sprintf("%s%s%s%s %f %d\n", *graphitePrefix, Slice.Prefix, *meanPrefix, Slice.Name, a.Value(), Slice.Epoch)
 
 	// Counts
 	c := MetricCalculator(CountContents{values: Slice.Values})
-	GraphiteOut <- fmt.Sprintf("%s%s%s %f %d\n", *graphitePrefix, *countPrefix, Slice.Name, c.Value(), Slice.Epoch)
+	GraphiteOut <- fmt.Sprintf("%s%s%s%s %f %d\n", *graphitePrefix, Slice.Prefix, *countPrefix, Slice.Name, c.Value(), Slice.Epoch)
 
 	// Buckets
 	bv := BucketsAndValues{buckets: ValueBuckets, values: Slice.Values}
 	for bucket, count := range BucketedResults(bv) {
-		GraphiteOut <- fmt.Sprintf("%s%s%s.%s %f %d\n", *graphitePrefix, *bucketPrefix, Slice.Name, strings.Replace(strconv.FormatFloat(bucket, 'f', 3, 32), ".", "_", -1), count, Slice.Epoch)
+		GraphiteOut <- fmt.Sprintf("%s%s%s%s.%s %f %d\n", *graphitePrefix, Slice.Prefix, *bucketPrefix, Slice.Name, strings.Replace(strconv.FormatFloat(bucket, 'f', 3, 32), ".", "_", -1), count, Slice.Epoch)
 	}
 }
 
@@ -242,37 +245,40 @@ func handleConnection(conn net.Conn) {
 
 // Grabbed from stasdaemon.go
 func parseMessage(line string) []*Metric {
-	// TODO: Evaluate something like the bitly statsdaemon style bye parser:
+	// TODO: Evaluate something like the bitly statsdaemon style byte parser:
 	// 		https://github.com/bitly/statsdaemon/commit/c1816f025d3ccec416dc11098605087a6d7e138d
-	// Example: some.metric:1.24g:1415833364
+	// Example: metric_prefix:some.metric:1.24g:1415833364
 	// TODO: Add a graphite prefix to the metric name
-	var packetRegexp = regexp.MustCompile("^([^:]+):([0-9.]+)(g)@([0-9]+)$")
+	var packetRegexp = regexp.MustCompile("^([^:]+):([^:]+):([0-9.]+)(g)@([0-9]+)$")
 	var output []*Metric
 	var valueErr, epochErr error
 	if line != "" {
 		item := packetRegexp.FindStringSubmatch(line)
-		if len(item) != 5 {
+
+		if len(item) != 6 {
+			// TODO: Put error counter here
 			return output
 		}
 		var value float64
 		var epoch uint64
-		modifier := item[3]
+		modifier := item[4]
 		switch modifier {
 		default: // Assuming a g(gauge) modifier for now
-			value, valueErr = strconv.ParseFloat(item[2], 64)
+			value, valueErr = strconv.ParseFloat(item[3], 64)
 			if valueErr != nil {
-				log.Printf("ERROR: failed to ParseFloat %s - %s", item[2], valueErr.Error())
+				log.Printf("ERROR: failed to ParseFloat %s - %s", item[3], valueErr.Error())
 			}
-			epoch, epochErr = strconv.ParseUint(item[4], 10, 64)
+			epoch, epochErr = strconv.ParseUint(item[5], 10, 64)
 			if epochErr != nil {
-				log.Printf("ERROR: failed to ParseInt %s - %s", item[4], epochErr.Error())
+				log.Printf("ERROR: failed to ParseInt %s - %s", item[5], epochErr.Error())
 			}
 		}
 
 		metric := &Metric{
-			Name:  item[1],
-			Value: value,
-			Epoch: epoch,
+			Prefix: item[1] + ".", // Putting this here to prevent lots of logic stuff elsewhere
+			Name:   item[2],
+			Value:  value,
+			Epoch:  epoch,
 		}
 		output = append(output, metric)
 	}
@@ -341,7 +347,8 @@ func main() {
 
 	go func() {
 		MetricMap := make(map[string]*SliceContainer)
-		/* TODO: Add MetricMap cleanup functionality */
+		/* TODO: Add MetricMap cleanup functionality (ie cleaning up old
+		keys in the map that are haven't been updated in the TTL window) */
 
 		for {
 			select {
@@ -350,33 +357,34 @@ func main() {
 				//TODO: Deal with submitting metrics before shutting down
 				return
 			case metric := <-MetricsIn:
-				_, present := MetricMap[metric.Name]
+				var mn string = metric.Prefix + metric.Name
+				_, present := MetricMap[mn]
 				// Do all the stuff to initalize the new Metric
 				if present != true {
-					// Create a new TimeSlice for that epoch
-					MetricMap[metric.Name] = new(SliceContainer)
-					MetricMap[metric.Name].Name = metric.Name
-					MetricMap[metric.Name].SliceMap = make(map[uint64]*TimeSlice)
-					MetricMap[metric.Name].ActiveSlices = make(map[uint64]uint64)
-					MetricMap[metric.Name].SubmitTicker = time.NewTicker(time.Duration(*flushInterval) * time.Second)
-					MetricMap[metric.Name].Input = make(chan *Metric)
-					MetricMap[metric.Name].Create(metric)
+					// Create a new SliceContainer for that epoch
+					MetricMap[mn] = new(SliceContainer)
+					MetricMap[mn].Name = metric.Name
+					MetricMap[mn].SliceMap = make(map[uint64]*TimeSlice)
+					MetricMap[mn].ActiveSlices = make(map[uint64]uint64)
+					MetricMap[mn].SubmitTicker = time.NewTicker(time.Duration(*flushInterval) * time.Second)
+					MetricMap[mn].Input = make(chan *Metric)
+					MetricMap[mn].Create(metric)
 				}
 
 				// Initialize bit bits for a new epoch in a metric we're tracking
-				_, Epresent := MetricMap[metric.Name].SliceMap[metric.Epoch]
+				_, Epresent := MetricMap[mn].SliceMap[metric.Epoch]
 				if Epresent != true {
-					MetricMap[metric.Name].SliceMap[metric.Epoch] = new(TimeSlice)
-					MetricMap[metric.Name].SliceMap[metric.Epoch].Create(metric)
+					MetricMap[mn].SliceMap[metric.Epoch] = new(TimeSlice)
+					MetricMap[mn].SliceMap[metric.Epoch].Create(metric)
 
 					//TODO: TTL out metrics in the metric map to help free memory
 					go func() { // Fire off a TTL watcher for the new Epoch
-						<-MetricMap[metric.Name].SliceMap[metric.Epoch].TTL.C
-						delete(MetricMap[metric.Name].SliceMap, metric.Epoch)
+						<-MetricMap[mn].SliceMap[metric.Epoch].TTL.C
+						delete(MetricMap[mn].SliceMap, metric.Epoch)
 					}()
 				}
 				go func() { // Fire off new info to this input
-					MetricMap[metric.Name].Input <- metric
+					MetricMap[mn].Input <- metric
 				}()
 			}
 		}
