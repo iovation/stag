@@ -57,7 +57,7 @@ type Metric struct {
 
 var (
 	MetricsIn    = make(chan *Metric, 100000)
-	GraphiteOut  = make(chan string, 100000)
+	GraphiteOut  = make(chan string)
 	ValueBuckets = []float64{0, 0.125, 0.5, 1, 2, 5}
 )
 
@@ -214,7 +214,7 @@ func tcpListener() {
 		// Listen for an incoming connection.
 		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Println("Error accepting: ", err.Error())
+			log.Println("Error accepting: ", err.Error())
 			os.Exit(1)
 		}
 
@@ -252,7 +252,6 @@ func parseMessage(line string) []*Metric {
 	if line != "" {
 		item := packetRegexp.FindStringSubmatch(line)
 		if len(item) != 5 {
-			// fmt.Println(len(item))
 			return output
 		}
 		var value float64
@@ -280,39 +279,39 @@ func parseMessage(line string) []*Metric {
 	return output
 }
 
-func SubmitToGraphite() {
-	client, err := net.Dial("tcp", *graphiteAddress)
-	if err != nil {
-		log.Printf("Error dialing %s %s", *graphiteAddress, err.Error())
-		if *debug == false {
-			return
-		} else {
-			log.Printf("WARNING: in debug mode. resetting counters even though connection to graphite failed")
-		}
-	} else {
-		defer client.Close()
-	}
-
-	//TODO: Add handling for statflow (internal) metrics
-
+func ConnectToGraphite() {
+	errCh := make(chan error)
 	for {
-		select {
-		case datain := <-GraphiteOut:
-			buffer := bytes.NewBuffer([]byte{})
-			fmt.Fprintf(buffer, "%s", datain)
-			data := buffer.Bytes()
+		client, err := net.Dial("tcp", *graphiteAddress)
+		if err != nil {
+			log.Printf("Error with connection to: %s %s - RETRYING in 5s", *graphiteAddress, err.Error())
+			time.Sleep(5 * time.Second)
+			continue
+		} else {
+			log.Printf("Connected to Graphite: %s\n", *graphiteAddress)
+			defer client.Close()
+		}
+		go SubmitToGraphite(client, errCh)
+		err = <-errCh
+		if err != nil {
+			log.Println("Caught a connection error")
+			continue
+		}
+	}
+}
 
-			// TEST CODE
-			reg := regexp.MustCompile(`\.\.`)
-			if reg.FindString(datain) != "" {
-				fmt.Println(datain)
-			}
-			// END TEST CODE
+func SubmitToGraphite(client net.Conn, errCh chan error) {
+	//TODO: Add handling for submitting statflow (internal) metrics
+	for {
+		datain := <-GraphiteOut
+		buffer := bytes.NewBuffer([]byte{})
+		fmt.Fprintf(buffer, "%s", datain)
+		data := buffer.Bytes()
 
-			if client != nil {
-				// log.Printf("sent %d stats to %s", numStats, *graphiteAddress)
-				client.Write(data)
-			}
+		_, err := client.Write(data)
+		if err != nil {
+			errCh <- err
+			break
 		}
 	}
 }
@@ -383,6 +382,6 @@ func main() {
 		}
 	}()
 
-	go SubmitToGraphite()
+	go ConnectToGraphite()
 	tcpListener()
 }
