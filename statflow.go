@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	_ "expvar" // Exposes metrics under http://localhost/debug/vars
 	"flag"
 	"fmt"
@@ -22,19 +23,19 @@ import (
 	"time"
 )
 
-const VERSION = "0.3"
+const VERSION = "0.4"
 
 var signalchan chan os.Signal
 
 /*
-TODO: A bunch of these flags should get turned into config file params.
+TODO: A bunch of these flags (c/s)hould get turned into config file params.
 		Something in the same idea as what Graphite does for metric wildcards
 		seems like it'd make a lot of sense.  Config should include what
 		kinds of output are expected for each kind of metric (count,
 		throughput, histogram, etc.) as well as what prefix each metric type
 		should get.
 TODO: We should make use of pprof's HTTP server option to expose stats on running
-		instances: https://golang.org/pkg/net/http/pprof/
+		instances when in debug mode: https://golang.org/pkg/net/http/pprof/
 */
 var (
 	serviceAddress  = flag.String("address", "0.0.0.0:8126", "UDP service address")
@@ -53,7 +54,11 @@ var (
 )
 
 var (
-	statsGraphiteConnections = metrics.Counter("graphite_connection_count")
+	statsGraphiteConnections    = metrics.Counter("graphite_connection_count")
+	statErrantMetricCount       = metrics.Counter("metric_errors")
+	statProcessedMetricCount    = metrics.Counter("metric_count")
+	statGraphitePointsSentCount = metrics.Counter("graphite_points_submitted_count")
+	statIncomingConnectionCount = metrics.Counter("incoming_connection_count")
 )
 
 // Type for a single incoming metric
@@ -86,7 +91,7 @@ func (t *TimeSlice) Create(m *Metric) {
 	t.Epoch = m.Epoch
 	// README: Keep me in sync with the time under the Add method
 	t.TTL = time.NewTimer(time.Duration(*defaultTTL) * time.Second)
-	t.Values = make([]float64, 0) // TODO: Figure out if pre-allocating more stuff here would help performance (and how to implement that)
+	t.Values = make([]float64, 0)
 }
 
 // Add a value to a TimeSlice
@@ -195,7 +200,8 @@ func (s *SliceContainer) Add(m *Metric) {
 }
 
 func submit(Slice *TimeSlice) {
-	// TODO: Pickle this data for Graphite.
+	// TODO: Submit pickled data to Graphite for performance.
+
 	// Means
 	a := MetricCalculator(MeanContents{values: Slice.Values})
 	GraphiteOut <- fmt.Sprintf("%s%s%s%s %f %d\n", *graphitePrefix, Slice.Prefix, *meanPrefix, Slice.Name, a.Value(), Slice.Epoch)
@@ -213,14 +219,12 @@ func submit(Slice *TimeSlice) {
 
 // Grabbed from stasdaemon.go
 func tcpListener() {
-	// address, _ := net.ResolveUDPAddr("tcp", *serviceAddress)
 	log.Printf("Listening on %s/tcp", *serviceAddress)
 	listener, err := net.Listen("tcp", *serviceAddress)
 	if err != nil {
 		log.Fatalf("Error starting TCP listener: %s", err.Error())
 	}
 	defer listener.Close()
-	// message := make([]byte, 512)
 	for {
 		// Listen for an incoming connection.
 		conn, err := listener.Accept()
@@ -235,6 +239,7 @@ func tcpListener() {
 
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
+	statIncomingConnectionCount.Add()
 
 	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
@@ -253,10 +258,10 @@ func handleConnection(conn net.Conn) {
 
 // Grabbed from stasdaemon.go
 func parseMessage(line string) []*Metric {
-	// TODO: Evaluate something like the bitly statsdaemon style byte parser:
-	// 		https://github.com/bitly/statsdaemon/commit/c1816f025d3ccec416dc11098605087a6d7e138d
-	// Example: metric_prefix:some.metric:1.24g:1415833364
-	// TODO: Add a graphite prefix to the metric name
+	// Example message: metric_prefix:some.metric:1.24g:1415833364
+
+	/* TODO: Evaluate something like the bitly statsdaemon style byte parser:
+	https://github.com/bitly/statsdaemon/commit/c1816f025d3ccec416dc11098605087a6d7e138d */
 	var packetRegexp = regexp.MustCompile("^([^:]+):([^:]+):([0-9.]+)(g)@([0-9]+)$")
 	var output []*Metric
 	var valueErr, epochErr error
@@ -264,7 +269,8 @@ func parseMessage(line string) []*Metric {
 		item := packetRegexp.FindStringSubmatch(line)
 
 		if len(item) != 6 {
-			// TODO: Put error counter here
+			statErrantMetricCount.Add()
+			log.Printf("ERROR handling input: %s\n", line)
 			return output
 		}
 		var value float64
@@ -283,13 +289,15 @@ func parseMessage(line string) []*Metric {
 		}
 
 		metric := &Metric{
-			Prefix: item[1] + ".", // Putting this here to prevent lots of logic stuff elsewhere
+			Prefix: item[1] + ".", // Graphite Prefix
 			Name:   item[2],
 			Value:  value,
 			Epoch:  epoch,
 		}
 		output = append(output, metric)
 	}
+
+	statProcessedMetricCount.Add()
 	return output
 }
 
@@ -316,7 +324,6 @@ func ConnectToGraphite() {
 }
 
 func SubmitToGraphite(client net.Conn, errCh chan error) {
-	//TODO: Add handling for submitting statflow (internal) metrics
 	for {
 		datain := <-GraphiteOut
 		buffer := bytes.NewBuffer([]byte{})
@@ -326,12 +333,10 @@ func SubmitToGraphite(client net.Conn, errCh chan error) {
 		err := client.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		if err != nil {
 			log.Println("SetWriteDeadline failed: %v\n", err)
-		} else {
-			log.Println("SetWriteDeadline successful")
 		}
 
 		_, err = client.Write(data)
-		log.Println(err)
+		statGraphitePointsSentCount.Add()
 		if err != nil {
 			log.Println("Caught a connection error")
 			errCh <- err
@@ -340,18 +345,28 @@ func SubmitToGraphite(client net.Conn, errCh chan error) {
 	}
 }
 
+func MetricsHandler(w http.ResponseWriter, r *http.Request) {
+	c, g := metrics.Snapshot()
+	cJSON, err := json.Marshal(c)
+	if err != nil {
+		log.Println("ERROR formatting JSON for counts: %v", err)
+	}
+	gJSON, err := json.Marshal(g)
+	if err != nil {
+		log.Println("ERROR formatting JSON for gauges: %v", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	fmt.Fprintf(w, "{ \"counts\": %s,\n \"gauges\": %s }", string(cJSON), string(gJSON))
+}
+
 func RunWebServer() {
 	sock, err := net.Listen("tcp", *webAddress)
 	if err != nil {
 		log.Fatalf("Error starting HTTP listener: %s", err.Error())
 	}
 	log.Printf("Listening on http://%s", *webAddress)
-	// http.HandleFunc("/metrics", MetricsHandler)
-	// b := &bytes.Buffer{}
-	// enc := json.NewEncoder(b)
-	// http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-	// 	enc.Encode(statRegistry)
-	// })
+	http.HandleFunc("/metrics", MetricsHandler)
 	http.Serve(sock, nil)
 }
 
@@ -372,24 +387,14 @@ func main() {
 		defer profile.Start(&profileCfg).Stop()
 	}
 
-	// statsGraphiteConnections := metrics.Counter()
-
 	if *graphitePrefix != "" {
 		*graphitePrefix = fmt.Sprintf("%s.", *graphitePrefix)
 	}
 	signalchan = make(chan os.Signal, 1)
 	signal.Notify(signalchan, syscall.SIGTERM)
 
-	// Drop some stats
-	// go func() {
-	// 	for {
-	// 		time.Sleep(5 * time.Second)
-	// 		c, _ := metrics.Snapshot()
-	// 		fmt.Println(c)
-	// 	}
-	// }()
-
 	go func() {
+		// TODO: Collect metrics on number of keys in the metric map
 		MetricMap := make(map[string]*SliceContainer)
 		/* TODO: Add MetricMap cleanup functionality (ie cleaning up old
 		keys in the map that are haven't been updated in the TTL window) */
@@ -434,7 +439,7 @@ func main() {
 		}
 	}()
 
-	// go RunWebServer()
+	go RunWebServer()
 	go ConnectToGraphite()
 	tcpListener()
 }
