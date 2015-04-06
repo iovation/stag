@@ -3,11 +3,14 @@ package main
 import (
 	"bufio"
 	"bytes"
+	_ "expvar" // Exposes metrics under http://localhost/debug/vars
 	"flag"
 	"fmt"
+	"github.com/codahale/metrics"
 	"github.com/davecheney/profile"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"regexp"
@@ -19,7 +22,7 @@ import (
 	"time"
 )
 
-const VERSION = "0.2"
+const VERSION = "0.3"
 
 var signalchan chan os.Signal
 
@@ -35,6 +38,7 @@ TODO: We should make use of pprof's HTTP server option to expose stats on runnin
 */
 var (
 	serviceAddress  = flag.String("address", "0.0.0.0:8126", "UDP service address")
+	webAddress      = flag.String("webAddress", "127.0.0.1:8127", "HTTP stats interface")
 	graphiteAddress = flag.String("graphite", "127.0.0.1:2003", "Graphite service address")
 	graphitePrefix  = flag.String("metric-prefix", "", "Default Graphite Prefix")
 	flushInterval   = flag.Int("flush-interval", 2, "Flush interval (seconds)")
@@ -46,6 +50,10 @@ var (
 	bucketPrefix    = flag.String("bucket-prefix", "bucket.", "Default prefix for buckets")
 	maxProcs        = flag.Int("maxprocs", 2, "Default max number of OS processes")
 	profileMode     = flag.Bool("profilemode", false, "Turn on app profiling")
+)
+
+var (
+	statsGraphiteConnections = metrics.Counter("graphite_connection_count")
 )
 
 // Type for a single incoming metric
@@ -289,6 +297,7 @@ func ConnectToGraphite() {
 	errCh := make(chan error)
 	for {
 		client, err := net.Dial("tcp", *graphiteAddress)
+		statsGraphiteConnections.Add()
 		if err != nil {
 			log.Printf("Error with connection to: %s %s - RETRYING in 5s", *graphiteAddress, err.Error())
 			time.Sleep(5 * time.Second)
@@ -314,12 +323,36 @@ func SubmitToGraphite(client net.Conn, errCh chan error) {
 		fmt.Fprintf(buffer, "%s", datain)
 		data := buffer.Bytes()
 
-		_, err := client.Write(data)
+		err := client.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		if err != nil {
+			log.Println("SetWriteDeadline failed: %v\n", err)
+		} else {
+			log.Println("SetWriteDeadline successful")
+		}
+
+		_, err = client.Write(data)
+		log.Println(err)
+		if err != nil {
+			log.Println("Caught a connection error")
 			errCh <- err
 			break
 		}
 	}
+}
+
+func RunWebServer() {
+	sock, err := net.Listen("tcp", *webAddress)
+	if err != nil {
+		log.Fatalf("Error starting HTTP listener: %s", err.Error())
+	}
+	log.Printf("Listening on http://%s", *webAddress)
+	// http.HandleFunc("/metrics", MetricsHandler)
+	// b := &bytes.Buffer{}
+	// enc := json.NewEncoder(b)
+	// http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+	// 	enc.Encode(statRegistry)
+	// })
+	http.Serve(sock, nil)
 }
 
 func main() {
@@ -339,11 +372,22 @@ func main() {
 		defer profile.Start(&profileCfg).Stop()
 	}
 
+	// statsGraphiteConnections := metrics.Counter()
+
 	if *graphitePrefix != "" {
 		*graphitePrefix = fmt.Sprintf("%s.", *graphitePrefix)
 	}
 	signalchan = make(chan os.Signal, 1)
 	signal.Notify(signalchan, syscall.SIGTERM)
+
+	// Drop some stats
+	// go func() {
+	// 	for {
+	// 		time.Sleep(5 * time.Second)
+	// 		c, _ := metrics.Snapshot()
+	// 		fmt.Println(c)
+	// 	}
+	// }()
 
 	go func() {
 		MetricMap := make(map[string]*SliceContainer)
@@ -390,6 +434,7 @@ func main() {
 		}
 	}()
 
+	// go RunWebServer()
 	go ConnectToGraphite()
 	tcpListener()
 }
