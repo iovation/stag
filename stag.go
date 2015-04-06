@@ -23,7 +23,7 @@ import (
 	"time"
 )
 
-const VERSION = "0.4"
+const VERSION = "0.4.0"
 
 var signalchan chan os.Signal
 
@@ -373,8 +373,10 @@ func RunWebServer() {
 func main() {
 	flag.Parse()
 	if *showVersion {
-		fmt.Printf("statflow v%s\n", VERSION)
+		fmt.Printf("stag v%s\n", VERSION)
 		return
+	} else {
+		log.Printf("stag v%s starting\n", VERSION)
 	}
 
 	runtime.GOMAXPROCS(*maxProcs)

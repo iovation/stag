@@ -1,12 +1,35 @@
-# statflow
+# Stag
+Statistics Aggregator
 
-_Don't sample_
+```
+     {__}
+      \/_____!
+        \----|
+ejm96   /|   |\
+```
 
-Statflow is a tool for collecting and submitting stats, in this case to Graphite.  It also collects the timestamp at which the event occured, which makes it great for situations where you can't rely on messages arriving in order or on time.  The goal is to push this data into Graphite early and often after we receive it.
+Stag is a tool for collecting and aggregating statistics from streams of data.  It also collects the timestamp at which the event occured, which makes it great for situations where you can't rely on messages arriving in order or on time.  Stag lets you collect many data points relatively quickly and submit them  data into Graphite early and often after we receive it.
 
 # What it's doing
 
-Metrics come into statsflow via UDP.  They're held in memory until the TTL (default: 10 seconds) expires, and submitted to Graphite on the flush interval (default: 2 seconds).  It's designed to be fast, though it will consume a lot of RAM in the event that you're holding a lot of data for a long time.
+Metrics come into Stag via TCP.  The values are grouped together in memory by the metric's prefix and name until the TTL (default: 10 seconds) expires.  Every time the flush interval occurs (default: 2 seconds) all metrics that have been updated are submitted (or resubmitted) to Graphite.  It's designed to be fast, though it will consume a lot of RAM in the event that you're holding a lot of data for a long time.
+
+# Input format
+
+metric_prefix:metric_name:valueg@timestamp
+
+* `metric_prefix` - The graphite prefix for the metric
+* `metric_name` - Name of the metric
+* `value` - Value of the metric in question.  Suffixed with a metric type ("g" to indicate that it's a gauge).  Other types of metrics could be added in the future (counts, etc.)
+* timestamp - Timestamp (in UNIX epoch format) at which the measurement was read.
+
+# Example usage
+
+1. Start stag and point it at a Graphite server
+1. In another terminal, echo some data into stag using netcat:  ```echo my_metrics:some_thing:0.5g@1427259669 | nc localhost 8126 ; echo my_metrics:some_thing:1g@1427259669 | nc localhost 8126```
+1. Discover the new metics you've added in Graphite
+
+
 
 # Command Line Options
 
