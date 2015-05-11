@@ -47,9 +47,9 @@ var (
 	defaultTTL      = flag.Int("default-ttl", 10, "Default TTL")
 	debug           = flag.Bool("debug", false, "print statistics sent to graphite")
 	showVersion     = flag.Bool("version", false, "print version string")
-	meanPrefix      = flag.String("mean-prefix", "mean.", "Default prefix for means")
-	countPrefix     = flag.String("count-prefix", "count.", "Default prefix for counts")
-	bucketPrefix    = flag.String("bucket-prefix", "bucket.", "Default prefix for buckets")
+	meanPrefix      = flag.String("mean-prefix", "mean.", "Default prefix for means (note the trailing dot)")
+	countPrefix     = flag.String("count-prefix", "count.", "Default prefix for counts (note the trailing dot)")
+	bucketPrefix    = flag.String("bucket-prefix", "bucket.", "Default prefix for buckets (note the trailing dot)")
 	maxProcs        = flag.Int("maxprocs", 2, "Default max number of OS processes")
 	profileMode     = flag.Bool("profilemode", false, "Turn on app profiling")
 )
@@ -74,16 +74,18 @@ var (
 	MetricsIn      = make(chan *Metric, 1000)
 	GraphiteOut    = make(chan string)
 	ValueBuckets   = []float64{0, 0.125, 0.5, 1, 2, 5}
+	MetricMap      = make(map[string]*SliceContainer)
 	MetricMapMutex = &sync.RWMutex{}
 )
 
 // Slice of metric data for a given period of time
 type TimeSlice struct {
-	Prefix string      // Graphite prefix for the metric
-	Name   string      // Graphite name of the metric
-	Values []float64   // Values of events for this period
-	Epoch  uint64      // epoch of time slice (i.e. events happened here)
-	TTL    *time.Timer // TTL timer for the slice
+	Prefix string    // Graphite prefix for the metric
+	Name   string    // Graphite name of the metric
+	Values []float64 // Values of events for this period
+	Epoch  uint64    // epoch of time slice (i.e. events happened here)
+	TTL    time.Time // The time when the epoch was last updated TODO: change name
+	// TTL    *time.Timer // TTL timer for the slice
 }
 
 // Used to create a new TimeSlice
@@ -92,7 +94,8 @@ func (t *TimeSlice) Create(m *Metric) {
 	t.Name = m.Name
 	t.Epoch = m.Epoch
 	// README: Keep me in sync with the time under the Add method
-	t.TTL = time.NewTimer(time.Duration(*defaultTTL) * time.Second)
+	// t.TTL = time.NewTimer(time.Duration(*defaultTTL) * time.Second)
+	t.TTL = time.Now()
 	t.Values = make([]float64, 0)
 }
 
@@ -100,7 +103,8 @@ func (t *TimeSlice) Create(m *Metric) {
 func (t *TimeSlice) Add(v float64) {
 	t.Values = append(t.Values, v)
 	// NOTE: Keep me in sync with the time under the Create method
-	t.TTL.Reset(time.Duration(*defaultTTL) * time.Second)
+	t.TTL = time.Now()
+	// t.TTL.Reset(time.Duration(*defaultTTL) * time.Second)
 }
 
 type MetricCalculator interface {
@@ -169,7 +173,7 @@ type SliceContainer struct {
 	Name     string                // Graphite name of the metric
 	SliceMap map[uint64]*TimeSlice // Time Slices for this metric
 	//TODO: Should ActiveSlices be named something more like RecentEpochs?
-	//TODO: Should ActiveSlices be a map?
+	//TODO: Should ActiveSlices be a map or a slice?
 	ActiveSlices map[uint64]uint64 // Set of *active* (timeslices are removed from this after they've been submitted, and re-added after new data comes in)
 	Input        chan *Metric      // Input channel for new Metrics
 }
@@ -362,6 +366,24 @@ func RunWebServer() {
 	http.Serve(sock, nil)
 }
 
+func TTLLoop() {
+	ttlTicker := time.NewTicker(time.Second * 5)
+	for {
+		<-ttlTicker.C
+		// log.Println("TTLLoop firing")
+		MetricMapMutex.Lock()
+		for _, sliceContainer := range MetricMap {
+			for epoch, slice := range sliceContainer.SliceMap {
+				if slice.TTL.Before(time.Now().Add(time.Duration(*defaultTTL*-1) * time.Second)) {
+					// log.Println("Deleting " + slice.Name + ":" + strconv.FormatUint(slice.Epoch, 10))
+					delete(sliceContainer.SliceMap, epoch)
+				}
+			}
+		}
+		MetricMapMutex.Unlock()
+	}
+}
+
 func main() {
 	flag.Parse()
 	if *showVersion {
@@ -388,14 +410,11 @@ func main() {
 	signal.Notify(signalchan, syscall.SIGTERM)
 
 	FlushTicker := time.NewTicker(time.Duration(*flushInterval) * time.Second)
-	// TTLTicker	:= time.
-
+	// TODO: Collect metrics on number of keys in the metric map
+	// MetricMap := make(map[string]*SliceContainer)
+	//TODO: Turn metricTouchList into a heap with pop and push methods
+	metricTouchList := make(map[string]time.Time) // metric name along with time updated
 	go func() {
-		// TODO: Collect metrics on number of keys in the metric map
-		MetricMap := make(map[string]*SliceContainer)
-		metricTouchList := make(map[string]time.Time) // metric name along with time updated
-		var lastFlushTime time.Time
-		lastFlushTime = time.Now()
 		/* TODO: Add MetricMap cleanup functionality (ie cleaning up old
 		keys in the map that are haven't been updated in the TTL window) */
 		for {
@@ -421,12 +440,29 @@ func main() {
 				}
 
 				// Initialize bit bits for a new epoch in the metric we've received
+				MetricMapMutex.RLock()
 				_, Epresent := MetricMap[mn].SliceMap[metric.Epoch]
+				MetricMapMutex.RUnlock()
 				if Epresent != true {
 					MetricMapMutex.Lock()
 					MetricMap[mn].SliceMap[metric.Epoch] = new(TimeSlice)
 					MetricMap[mn].SliceMap[metric.Epoch].Create(metric)
 					MetricMapMutex.Unlock()
+					/*
+						var nepoch string = mn + strconv.FormatUint(metric.Epoch, 10) // name + epoch = nepoch
+						CentralTTLMutex.Lock()
+						CentralTTL[nepoch] = time.NewTimer(time.Duration(*defaultTTL) * time.Second) // THIS IS A RACE PROBLEM
+						CentralTTLMutex.Unlock()
+						go func() {
+							<-CentralTTL[nepoch].C
+							MetricMapMutex.Lock()
+							delete(MetricMap[mn].SliceMap, metric.Epoch)
+							MetricMapMutex.Unlock()
+							//TODO: if activeslices is empty, delete the whole slice container
+
+						}()
+					*/
+
 					// //TODO: TTL out metrics in the metric map to help free memory
 					// go func() { // Fire off a TTL watcher for the new Epoch
 					// 	<-MetricMap[mn].SliceMap[metric.Epoch].TTL.C
@@ -435,22 +471,23 @@ func main() {
 				}
 				MetricMap[mn].Input <- metric
 				metricTouchList[mn] = time.Now()
-			case <-FlushTicker.C:
-				for metricName, timeUpdated := range metricTouchList {
-					if timeUpdated.After(lastFlushTime) == true { // If we updated the metric after the last time we flushed it, flush it again!
-						// fmt.Println("Found a point to flush: ", metricName)
-						MetricMapMutex.RLock()
-						for epoch, _ := range MetricMap[metricName].ActiveSlices { // Submit the slice(s) that have been recently updated
-							submit(MetricMap[metricName].SliceMap[epoch])
-						}
-						MetricMapMutex.RUnlock()
+			case <-FlushTicker.C: // TODO: Split this out into a goroutine?
+				for metricName, _ := range metricTouchList {
+					// fmt.Println("Found a point to flush: ", metricName)
+					MetricMapMutex.Lock()
+					for epoch, _ := range MetricMap[metricName].ActiveSlices { // Submit the slice(s) that have been recently updated
+						// log.Println("Submitting " + metricName + "[" + strconv.FormatUint(epoch, 10) + "]")
+						submit(MetricMap[metricName].SliceMap[epoch])
+						delete(MetricMap[metricName].ActiveSlices, epoch)
 					}
+					MetricMapMutex.Unlock()
+					delete(metricTouchList, metricName)
 				}
-				lastFlushTime = time.Now()
 			}
 		}
 	}()
 
+	go TTLLoop()
 	go RunWebServer()
 	go ConnectToGraphite()
 	tcpListener()
