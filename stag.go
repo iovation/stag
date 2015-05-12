@@ -71,7 +71,7 @@ type Metric struct {
 }
 
 var (
-	MetricsIn      = make(chan *Metric, 1000)
+	MetricsIn      = make(chan *Metric)
 	GraphiteOut    = make(chan string)
 	ValueBuckets   = []float64{0, 0.125, 0.5, 1, 2, 5}
 	MetricMap      = make(map[string]*SliceContainer)
@@ -374,8 +374,10 @@ func TTLLoop() {
 		MetricMapMutex.Lock()
 		for _, sliceContainer := range MetricMap {
 			for epoch, slice := range sliceContainer.SliceMap {
+				if _, present := sliceContainer.ActiveSlices[epoch]; present { // If the slice is not submitted yet it'll still be in ActiveSlices
+					continue
+				}
 				if slice.TTL.Before(time.Now().Add(time.Duration(*defaultTTL*-1) * time.Second)) {
-					// log.Println("Deleting " + slice.Name + ":" + strconv.FormatUint(slice.Epoch, 10))
 					delete(sliceContainer.SliceMap, epoch)
 				}
 			}
@@ -448,26 +450,6 @@ func main() {
 					MetricMap[mn].SliceMap[metric.Epoch] = new(TimeSlice)
 					MetricMap[mn].SliceMap[metric.Epoch].Create(metric)
 					MetricMapMutex.Unlock()
-					/*
-						var nepoch string = mn + strconv.FormatUint(metric.Epoch, 10) // name + epoch = nepoch
-						CentralTTLMutex.Lock()
-						CentralTTL[nepoch] = time.NewTimer(time.Duration(*defaultTTL) * time.Second) // THIS IS A RACE PROBLEM
-						CentralTTLMutex.Unlock()
-						go func() {
-							<-CentralTTL[nepoch].C
-							MetricMapMutex.Lock()
-							delete(MetricMap[mn].SliceMap, metric.Epoch)
-							MetricMapMutex.Unlock()
-							//TODO: if activeslices is empty, delete the whole slice container
-
-						}()
-					*/
-
-					// //TODO: TTL out metrics in the metric map to help free memory
-					// go func() { // Fire off a TTL watcher for the new Epoch
-					// 	<-MetricMap[mn].SliceMap[metric.Epoch].TTL.C
-					// 	delete(MetricMap[mn].SliceMap, metric.Epoch)
-					// }()
 				}
 				MetricMap[mn].Input <- metric
 				metricTouchList[mn] = time.Now()
@@ -476,7 +458,6 @@ func main() {
 					// fmt.Println("Found a point to flush: ", metricName)
 					MetricMapMutex.Lock()
 					for epoch, _ := range MetricMap[metricName].ActiveSlices { // Submit the slice(s) that have been recently updated
-						// log.Println("Submitting " + metricName + "[" + strconv.FormatUint(epoch, 10) + "]")
 						submit(MetricMap[metricName].SliceMap[epoch])
 						delete(MetricMap[metricName].ActiveSlices, epoch)
 					}
