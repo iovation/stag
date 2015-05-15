@@ -1,6 +1,6 @@
 Name:     stag
 Version:  0.4.0
-Release:  0
+Release:  1
 Summary:  Stag - Statistics Aggregator
 
 Group:      iovation, inc.
@@ -16,14 +16,14 @@ Requires(preun): chkconfig
 Requires(preun): initscripts
 
 %description
-wtf-consumer connects to an iovation TLM queue and gathers data, caculates
-averages, histogram buckets and throughput and dumps that data to Graphite.
+Stag is a statistics aggregator that takes input similar to that of statsd and outputs it to Graphite
 
 %prep
 %setup -q
+go get github.com/constabulary/gb/...
 
 %build
-go build stag.go
+cd src ; gb build all
 
 %install
 %{__mkdir} -p $RPM_BUILD_ROOT%{prefix}/etc/init.d $RPM_BUILD_ROOT%{prefix}/usr/local/stag/bin
