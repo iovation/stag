@@ -1,3 +1,5 @@
+%define debug_package %{nil}
+
 Name:     stag
 Version:  0.4.0
 Release:  1
