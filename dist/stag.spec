@@ -10,7 +10,6 @@ License:    Proprietary
 Source0:    %{name}-%{version}.tar.gz
 Prefix:     /
 BuildRoot:  %(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
-BuildArch:  noarch
 BuildRequires: golang
 Requires(post): chkconfig
 Requires(preun): chkconfig
