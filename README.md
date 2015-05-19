@@ -41,6 +41,7 @@ Usage of statflow:
   -debug=false: print statistics sent to graphite
   -default-ttl=10: Default TTL
   -flush-interval=2: Flush interval (seconds)
+  -flush-delay=1: Flush delay (seconds).  This is a sort of "cool off" period for new metrics coming into a given second.
   -graphite="127.0.0.1:2003": Graphite service address
   -maxprocs=2: Default max number of OS processes
   -mean-prefix="mean.": Default prefix for means

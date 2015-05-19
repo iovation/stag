@@ -43,7 +43,8 @@ var (
 	webAddress      = flag.String("webAddress", "127.0.0.1:8127", "HTTP stats interface")
 	graphiteAddress = flag.String("graphite", "127.0.0.1:2003", "Graphite service address")
 	graphitePrefix  = flag.String("metric-prefix", "", "Default Graphite Prefix")
-	flushInterval   = flag.Int("flush-interval", 2, "Flush interval (seconds)")
+	flushInterval   = flag.Int("flush-interval", 2, "Flush to Graphite interval (seconds)")
+	flushDelay      = flag.Int("flush-delay", 1, "Delay before flushing data to Graphite (seconds)")
 	defaultTTL      = flag.Int("default-ttl", 10, "Default TTL")
 	debug           = flag.Bool("debug", false, "print statistics sent to graphite")
 	showVersion     = flag.Bool("version", false, "print version string")
@@ -67,7 +68,7 @@ type Metric struct {
 	Prefix string  // The Graphite prefix of the metric
 	Name   string  // Graphite name of the metric
 	Value  float64 // Values of events for this period
-	Epoch  uint64  // epoch of time slice (i.e. events happened here)
+	Epoch  int64   // epoch of time slice (i.e. events happened here)
 }
 
 var (
@@ -83,7 +84,7 @@ type TimeSlice struct {
 	Prefix string    // Graphite prefix for the metric
 	Name   string    // Graphite name of the metric
 	Values []float64 // Values of events for this period
-	Epoch  uint64    // epoch of time slice (i.e. events happened here)
+	Epoch  int64     // epoch of time slice (i.e. events happened here)
 	TTL    time.Time // The time when the epoch was last updated TODO: change name
 	// TTL    *time.Timer // TTL timer for the slice
 }
@@ -170,12 +171,12 @@ func BucketedResults(h BucketsAndValues) map[float64]float64 {
 
 // A slice container that contains a ticker for iteration
 type SliceContainer struct {
-	Name     string                // Graphite name of the metric
-	SliceMap map[uint64]*TimeSlice // Time Slices for this metric
+	Name     string               // Graphite name of the metric
+	SliceMap map[int64]*TimeSlice // Time Slices for this metric
 	//TODO: Should ActiveSlices be named something more like RecentEpochs?
 	//TODO: Should ActiveSlices be a map or a slice?
-	ActiveSlices map[uint64]uint64 // Set of *active* (timeslices are removed from this after they've been submitted, and re-added after new data comes in)
-	Input        chan *Metric      // Input channel for new Metrics
+	ActiveSlices map[int64]int64 // Set of *active* (timeslices are removed from this after they've been submitted, and re-added after new data comes in)
+	Input        chan *Metric    // Input channel for new Metrics
 }
 
 func (s *SliceContainer) Create(m *Metric) {
@@ -184,7 +185,7 @@ func (s *SliceContainer) Create(m *Metric) {
 			i := <-s.Input
 			MetricMapMutex.Lock()
 			s.Add(i)
-			s.ActiveSlices[i.Epoch] = i.Epoch
+			s.ActiveSlices[i.Epoch] = time.Now().Unix()
 			MetricMapMutex.Unlock()
 		}
 	}()
@@ -192,7 +193,7 @@ func (s *SliceContainer) Create(m *Metric) {
 
 func (s *SliceContainer) Add(m *Metric) {
 	s.SliceMap[m.Epoch].Add(m.Value)
-	s.ActiveSlices[m.Epoch] = m.Epoch
+	s.ActiveSlices[m.Epoch] = time.Now().Unix()
 }
 
 func submit(Slice *TimeSlice) {
@@ -270,7 +271,7 @@ func parseMessage(line string) []*Metric {
 			return output
 		}
 		var value float64
-		var epoch uint64
+		var epoch int64
 		modifier := item[4]
 		switch modifier {
 		default: // Assuming a g(gauge) modifier for now
@@ -278,7 +279,7 @@ func parseMessage(line string) []*Metric {
 			if valueErr != nil {
 				log.Printf("ERROR: failed to ParseFloat %s - %s", item[3], valueErr.Error())
 			}
-			epoch, epochErr = strconv.ParseUint(item[5], 10, 64)
+			epoch, epochErr = strconv.ParseInt(item[5], 10, 64)
 			if epochErr != nil {
 				log.Printf("ERROR: failed to ParseInt %s - %s", item[5], epochErr.Error())
 			}
@@ -434,8 +435,8 @@ func main() {
 					// Create a new SliceContainer for that epoch
 					MetricMap[mn] = new(SliceContainer)
 					MetricMap[mn].Name = metric.Name
-					MetricMap[mn].SliceMap = make(map[uint64]*TimeSlice)
-					MetricMap[mn].ActiveSlices = make(map[uint64]uint64)
+					MetricMap[mn].SliceMap = make(map[int64]*TimeSlice)
+					MetricMap[mn].ActiveSlices = make(map[int64]int64)
 					MetricMap[mn].Input = make(chan *Metric)
 					MetricMap[mn].Create(metric)
 					MetricMapMutex.Unlock()
@@ -454,12 +455,17 @@ func main() {
 				MetricMap[mn].Input <- metric
 				metricTouchList[mn] = time.Now()
 			case <-FlushTicker.C: // TODO: Split this out into a goroutine?
+			FlushLoop:
 				for metricName, _ := range metricTouchList {
-					// fmt.Println("Found a point to flush: ", metricName)
 					MetricMapMutex.Lock()
-					for epoch, _ := range MetricMap[metricName].ActiveSlices { // Submit the slice(s) that have been recently updated
-						submit(MetricMap[metricName].SliceMap[epoch])
-						delete(MetricMap[metricName].ActiveSlices, epoch)
+					for epoch, updateTime := range MetricMap[metricName].ActiveSlices { // Submit the slice(s) that have been recently updated
+						if (time.Now().Unix() - int64(*flushDelay)) > updateTime {
+							submit(MetricMap[metricName].SliceMap[epoch])
+							delete(MetricMap[metricName].ActiveSlices, epoch)
+						} else {
+							MetricMapMutex.Unlock()
+							continue FlushLoop
+						}
 					}
 					MetricMapMutex.Unlock()
 					delete(metricTouchList, metricName)
