@@ -24,7 +24,7 @@ import (
 	"time"
 )
 
-const VERSION = "0.4.0"
+const VERSION = "0.4.1"
 
 var signalchan chan os.Signal
 
@@ -73,6 +73,7 @@ type Metric struct {
 
 var (
 	MetricsIn      = make(chan *Metric)
+	SubmitBuffer   = make(chan *TimeSlice, 1000)
 	GraphiteOut    = make(chan string)
 	ValueBuckets   = []float64{0, 0.125, 0.5, 1, 2, 5}
 	MetricMap      = make(map[string]*SliceContainer)
@@ -196,21 +197,24 @@ func (s *SliceContainer) Add(m *Metric) {
 	s.ActiveSlices[m.Epoch] = time.Now().Unix()
 }
 
-func submit(Slice *TimeSlice) {
+func CalculateSlices() {
 	// TODO: Submit pickled data to Graphite for performance.
+	for {
+		Slice := <-SubmitBuffer
 
-	// Means
-	a := MetricCalculator(MeanContents{values: Slice.Values})
-	GraphiteOut <- fmt.Sprintf("%s%s%s%s %f %d\n", *graphitePrefix, Slice.Prefix, *meanPrefix, Slice.Name, a.Value(), Slice.Epoch)
+		// Means
+		a := MetricCalculator(MeanContents{values: Slice.Values})
+		GraphiteOut <- fmt.Sprintf("%s%s%s%s %f %d\n", *graphitePrefix, Slice.Prefix, *meanPrefix, Slice.Name, a.Value(), Slice.Epoch)
 
-	// Counts
-	c := MetricCalculator(CountContents{values: Slice.Values})
-	GraphiteOut <- fmt.Sprintf("%s%s%s%s %f %d\n", *graphitePrefix, Slice.Prefix, *countPrefix, Slice.Name, c.Value(), Slice.Epoch)
+		// Counts
+		c := MetricCalculator(CountContents{values: Slice.Values})
+		GraphiteOut <- fmt.Sprintf("%s%s%s%s %f %d\n", *graphitePrefix, Slice.Prefix, *countPrefix, Slice.Name, c.Value(), Slice.Epoch)
 
-	// Buckets
-	bv := BucketsAndValues{buckets: ValueBuckets, values: Slice.Values}
-	for bucket, count := range BucketedResults(bv) {
-		GraphiteOut <- fmt.Sprintf("%s%s%s%s.%s %f %d\n", *graphitePrefix, Slice.Prefix, *bucketPrefix, Slice.Name, strings.Replace(strconv.FormatFloat(bucket, 'f', 3, 32), ".", "_", -1), count, Slice.Epoch)
+		// Buckets
+		bv := BucketsAndValues{buckets: ValueBuckets, values: Slice.Values}
+		for bucket, count := range BucketedResults(bv) {
+			GraphiteOut <- fmt.Sprintf("%s%s%s%s.%s %f %d\n", *graphitePrefix, Slice.Prefix, *bucketPrefix, Slice.Name, strings.Replace(strconv.FormatFloat(bucket, 'f', 3, 32), ".", "_", -1), count, Slice.Epoch)
+		}
 	}
 }
 
@@ -387,6 +391,28 @@ func TTLLoop() {
 	}
 }
 
+func SubmitLoop(FlushTicker *time.Ticker, metricTouchList map[string]time.Time) {
+	for {
+		<-FlushTicker.C // TODO: Split this out into a goroutine?
+	FlushLoop:
+		for metricName, _ := range metricTouchList {
+			MetricMapMutex.Lock()
+			for epoch, updateTime := range MetricMap[metricName].ActiveSlices { // Submit the slice(s) that have been recently updated
+				if (time.Now().Unix() - int64(*flushDelay)) > updateTime {
+					SubmitBuffer <- MetricMap[metricName].SliceMap[epoch]
+					// submit(MetricMap[metricName].SliceMap[epoch])
+					delete(MetricMap[metricName].ActiveSlices, epoch)
+				} else {
+					MetricMapMutex.Unlock()
+					continue FlushLoop
+				}
+			}
+			MetricMapMutex.Unlock()
+			delete(metricTouchList, metricName)
+		}
+	}
+}
+
 func main() {
 	flag.Parse()
 	if *showVersion {
@@ -414,8 +440,7 @@ func main() {
 
 	FlushTicker := time.NewTicker(time.Duration(*flushInterval) * time.Second)
 	// TODO: Collect metrics on number of keys in the metric map
-	// MetricMap := make(map[string]*SliceContainer)
-	//TODO: Turn metricTouchList into a heap with pop and push methods
+	// TODO: Turn metricTouchList into a heap with pop and push methods
 	metricTouchList := make(map[string]time.Time) // metric name along with time updated
 	go func() {
 		/* TODO: Add MetricMap cleanup functionality (ie cleaning up old
@@ -423,7 +448,7 @@ func main() {
 		for {
 			select {
 			case sig := <-signalchan:
-				fmt.Printf("!! Caught signal %d... shutting down\n", sig)
+				log.Printf("!! Caught signal %d... shutting down\n", sig)
 				//TODO: Deal with submitting metrics before shutting down
 				return
 			case metric := <-MetricsIn:
@@ -454,27 +479,13 @@ func main() {
 				}
 				MetricMap[mn].Input <- metric
 				metricTouchList[mn] = time.Now()
-			case <-FlushTicker.C: // TODO: Split this out into a goroutine?
-			FlushLoop:
-				for metricName, _ := range metricTouchList {
-					MetricMapMutex.Lock()
-					for epoch, updateTime := range MetricMap[metricName].ActiveSlices { // Submit the slice(s) that have been recently updated
-						if (time.Now().Unix() - int64(*flushDelay)) > updateTime {
-							submit(MetricMap[metricName].SliceMap[epoch])
-							delete(MetricMap[metricName].ActiveSlices, epoch)
-						} else {
-							MetricMapMutex.Unlock()
-							continue FlushLoop
-						}
-					}
-					MetricMapMutex.Unlock()
-					delete(metricTouchList, metricName)
-				}
 			}
 		}
 	}()
 
 	go TTLLoop()
+	go SubmitLoop(FlushTicker, metricTouchList)
+	go CalculateSlices()
 	go RunWebServer()
 	go ConnectToGraphite()
 	tcpListener()
