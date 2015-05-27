@@ -24,7 +24,7 @@ import (
 	"time"
 )
 
-const VERSION = "0.4.2"
+const VERSION = "0.4.3"
 
 var signalchan chan os.Signal
 
@@ -193,8 +193,13 @@ func (s *SliceContainer) Create(m *Metric) {
 }
 
 func (s *SliceContainer) Add(m *Metric) {
-	s.SliceMap[m.Epoch].Add(m.Value)
-	s.ActiveSlices[m.Epoch] = time.Now().Unix()
+	_, present := s.SliceMap[m.Epoch]
+	if present == true {
+		s.SliceMap[m.Epoch].Add(m.Value)
+		s.ActiveSlices[m.Epoch] = time.Now().Unix()
+	} else {
+		log.Println("Missing epoch ", m.Epoch, " - Some data will be missing from the aggregate!")
+	}
 }
 
 func CalculateSlices() {
@@ -304,6 +309,7 @@ func parseMessage(line string) []*Metric {
 
 func ConnectToGraphite() {
 	errCh := make(chan error)
+
 	for {
 		client, err := net.Dial("tcp", *graphiteAddress)
 		statsGraphiteConnections.Add()
@@ -318,7 +324,6 @@ func ConnectToGraphite() {
 		go SubmitToGraphite(client, errCh)
 		err = <-errCh
 		if err != nil {
-			log.Println("Caught a connection error")
 			continue
 		}
 	}
@@ -339,7 +344,7 @@ func SubmitToGraphite(client net.Conn, errCh chan error) {
 		_, err = client.Write(data)
 		statGraphitePointsSentCount.Add()
 		if err != nil {
-			log.Println("Caught a connection error")
+			log.Println("Caught a connection error: ", err)
 			errCh <- err
 			break
 		}
@@ -453,7 +458,9 @@ func main() {
 				return
 			case metric := <-MetricsIn:
 				var mn string = metric.Prefix + metric.Name
+				MetricMapMutex.RLock()
 				_, present := MetricMap[mn]
+				MetricMapMutex.RUnlock()
 				// Do all the stuff to initalize the new Metric
 				if present != true {
 					MetricMapMutex.Lock()

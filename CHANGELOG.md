@@ -1,5 +1,10 @@
 # Stag Changelog
 
+## 0.4.3
+
+* Added workaround for issue that arises when long Graphite connection interruptions occur.
+* Improved connection issue logging
+
 ## 0.4.2
 
 * Separated time slice calculation and metric submission into separate goroutines for performance
