@@ -1,5 +1,7 @@
 # Stag Changelog
 
+## 0.4.4
+
 ## 0.4.3
 
 * Added workaround for issue that arises when long Graphite connection interruptions occur.

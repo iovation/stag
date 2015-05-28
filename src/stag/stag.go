@@ -24,7 +24,7 @@ import (
 	"time"
 )
 
-const VERSION = "0.4.3"
+const VERSION = "0.4.4"
 
 var signalchan chan os.Signal
 
@@ -39,20 +39,21 @@ TODO: We should make use of pprof's HTTP server option to expose stats on runnin
 		instances when in debug mode: https://golang.org/pkg/net/http/pprof/
 */
 var (
-	serviceAddress  = flag.String("address", "0.0.0.0:8126", "UDP service address")
-	webAddress      = flag.String("webAddress", "127.0.0.1:8127", "HTTP stats interface")
-	graphiteAddress = flag.String("graphite", "127.0.0.1:2003", "Graphite service address")
-	graphitePrefix  = flag.String("metric-prefix", "", "Default Graphite Prefix")
-	flushInterval   = flag.Int("flush-interval", 2, "Flush to Graphite interval (seconds)")
-	flushDelay      = flag.Int("flush-delay", 1, "Delay before flushing data to Graphite (seconds)")
-	defaultTTL      = flag.Int("default-ttl", 10, "Default TTL")
-	debug           = flag.Bool("debug", false, "print statistics sent to graphite")
-	showVersion     = flag.Bool("version", false, "print version string")
-	meanPrefix      = flag.String("mean-prefix", "mean.", "Default prefix for means (note the trailing dot)")
-	countPrefix     = flag.String("count-prefix", "count.", "Default prefix for counts (note the trailing dot)")
-	bucketPrefix    = flag.String("bucket-prefix", "bucket.", "Default prefix for buckets (note the trailing dot)")
-	maxProcs        = flag.Int("maxprocs", 2, "Default max number of OS processes")
-	profileMode     = flag.Bool("profilemode", false, "Turn on app profiling")
+	serviceAddress       = flag.String("address", "0.0.0.0:8126", "UDP service address")
+	webAddress           = flag.String("webAddress", "127.0.0.1:8127", "HTTP stats interface")
+	graphiteAddress      = flag.String("graphite", "127.0.0.1:2003", "Graphite service address")
+	graphitePrefix       = flag.String("metric-prefix", "", "Default Graphite Prefix")
+	graphiteWriteTimeout = flag.Int("graphite-timeout", 10, "Default Graphite write timeout")
+	flushInterval        = flag.Int("flush-interval", 2, "Flush to Graphite interval (seconds)")
+	flushDelay           = flag.Int("flush-delay", 1, "Delay before flushing data to Graphite (seconds)")
+	defaultTTL           = flag.Int("default-ttl", 10, "Default TTL")
+	debug                = flag.Bool("debug", false, "print statistics sent to graphite")
+	showVersion          = flag.Bool("version", false, "print version string")
+	meanPrefix           = flag.String("mean-prefix", "mean.", "Default prefix for means (note the trailing dot)")
+	countPrefix          = flag.String("count-prefix", "count.", "Default prefix for counts (note the trailing dot)")
+	bucketPrefix         = flag.String("bucket-prefix", "bucket.", "Default prefix for buckets (note the trailing dot)")
+	maxProcs             = flag.Int("maxprocs", 2, "Default max number of OS processes")
+	profileMode          = flag.Bool("profilemode", false, "Turn on app profiling")
 )
 
 var (
@@ -336,7 +337,7 @@ func SubmitToGraphite(client net.Conn, errCh chan error) {
 		fmt.Fprintf(buffer, "%s", datain)
 		data := buffer.Bytes()
 
-		err := client.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		err := client.SetWriteDeadline(time.Now().Add(time.Duration(*graphiteWriteTimeout) * time.Second))
 		if err != nil {
 			log.Println("SetWriteDeadline failed: %v\n", err)
 		}

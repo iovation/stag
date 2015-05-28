@@ -34,17 +34,18 @@ metric_prefix:metric_name:valueg@timestamp
 # Command Line Options
 
 ```
-Usage of statflow:
+Usage of stag:
   -address="0.0.0.0:8126": UDP service address
-  -bucket-prefix="bucket.": Default prefix for buckets
-  -count-prefix="count.": Default prefix for counts
+  -bucket-prefix="bucket.": Default prefix for buckets (note the trailing dot)
+  -count-prefix="count.": Default prefix for counts (note the trailing dot)
   -debug=false: print statistics sent to graphite
   -default-ttl=10: Default TTL
-  -flush-interval=2: Flush interval (seconds)
-  -flush-delay=1: Flush delay (seconds).  This is a sort of "cool off" period for new metrics coming into a given second.
+  -flush-delay=1: Delay before flushing data to Graphite (seconds)
+  -flush-interval=2: Flush to Graphite interval (seconds)
   -graphite="127.0.0.1:2003": Graphite service address
+  -graphite-timeout=10: Default Graphite write timeout
   -maxprocs=2: Default max number of OS processes
-  -mean-prefix="mean.": Default prefix for means
+  -mean-prefix="mean.": Default prefix for means (note the trailing dot)
   -metric-prefix="": Default Graphite Prefix
   -profilemode=false: Turn on app profiling
   -version=false: print version string
