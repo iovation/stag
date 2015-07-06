@@ -1,0 +1,91 @@
+#!/bin/bash
+# stag daemon
+# chkconfig: 345 20 80
+# description: stag daemon
+# processname: stag
+
+NAME=stag
+DESC="Stag Daemon"
+PIDFILE=/var/run/$NAME.pid
+SCRIPTNAME=/etc/init.d/$NAME
+DAEMON_PATH="/usr/local/stag"
+
+. /etc/init.d/functions
+
+# Set our defaults to match the binary
+ADDRESS=0.0.0.0:8126
+WEB_ADDRESS="127.0.0.1:8127"
+BUCKET_PREFIX="bucket."
+MEAN_PREFIX="mean."
+COUNT_PREFIX="count."
+DEFAULT_TTL="10"
+FLUSH_DELAY="1"
+FLUSH_INTERVAL="2"
+GRAPHITE_HOST="127.0.0.1:2003"
+GRAPHITE_TIMEOUT="10"
+MAXPROCS="2"
+METRIC_PREFIX="" 
+[ -r /etc/sysconfig/$NAME ] && . /etc/sysconfig/$NAME
+
+DAEMON=$DAEMON_PATH/bin/stag
+
+DAEMONOPTS="-address=$ADDRESS -webAddress=$WEB_ADDRESS -bucket-prefix=$BUCKET_PREFIX -mean-prefix=$MEAN_PREFIX -count-prefix=$COUNT_PREFIX -flush-interval=$FLUSH_INTERVAL -flush-delay=$FLUSH_DELAY -graphite=$GRAPHITE_HOST -graphite-timeout=$GRAPHITE_TIMEOUT -maxprocs=$MAXPROCS -metric-prefix=$METRIC_PREFIX"
+
+case "$1" in
+start)
+    printf "%-50s" "Starting $NAME..."
+    cd $DAEMON_PATH
+    if [ $UID -ne 0 ]; then
+        RETVAL=1
+        failure
+    else
+        PID=$($DAEMON $DAEMONOPTS > /dev/null 2>&1 & echo $!)
+        if [ -z $PID ]; then
+            printf "\033[31m Fail \033[0m\n"
+        else
+            echo $PID > $PIDFILE
+            printf "\033[32m OK \033[0m\n"
+        fi
+        RETVAL=$?
+    fi;
+;;
+status)
+    printf "%-50s" "Checking $NAME..."
+    if [ -f $PIDFILE ]; then
+        PID=`cat $PIDFILE`
+        if [ -z "`ps axf | grep ${PID} | grep -v grep`" ]; then
+            printf "%s\n" "Process dead but pidfile exists"
+        else
+            echo "Running"
+        fi
+    else
+        printf "%s\n" "Service not running"
+    fi
+;;
+stop)
+    printf "%-50s" "Stopping $NAME"
+    if [ $UID -ne 0 ]; then
+        RETVAL=1
+        failure
+    else
+        PID=`cat $PIDFILE`
+        cd $DAEMON_PATH
+        if [ -f $PIDFILE ]; then
+            kill -HUP $PID
+            printf "\033[32m OK \033[0m\n"
+            rm -f $PIDFILE
+        else
+            printf "%s\n" "pidfile not found"
+        fi;
+    fi;
+;;
+
+restart)
+    $0 stop
+    $0 start
+;;
+
+*)
+    echo "Usage: $0 {status|start|stop|restart}"
+    exit 1
+esac

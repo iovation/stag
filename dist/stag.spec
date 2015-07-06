@@ -2,7 +2,7 @@
 
 Name:     stag
 Version:  0.4.4
-Release:  1
+Release:  2
 Summary:  Stag - Statistics Aggregator
 
 Group:      iovation, inc.
@@ -27,7 +27,7 @@ go get github.com/constabulary/gb/...
 cd src ; gb build all
 
 %install
-%{__mkdir} -p $RPM_BUILD_ROOT%{prefix}/etc/init.d $RPM_BUILD_ROOT%{prefix}/usr/local/stag/bin
+%{__mkdir} -p $RPM_BUILD_ROOT%{prefix}/etc/init.d $RPM_BUILD_ROOT%{prefix}/etc/sysconfig $RPM_BUILD_ROOT%{prefix}/usr/local/stag/bin
 %{__install} -p -m 755 bin/stag $RPM_BUILD_ROOT%{prefix}/usr/local/stag/bin
 
 %clean
