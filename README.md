@@ -34,17 +34,18 @@ metric_prefix:metric_name:valueg@timestamp
 # Command Line Options
 
 ```
-Usage of statflow:
+Usage of stag:
   -address="0.0.0.0:8126": UDP service address
-  -bucket-prefix="bucket.": Default prefix for buckets
-  -count-prefix="count.": Default prefix for counts
+  -bucket-prefix="bucket.": Default prefix for buckets (note the trailing dot)
+  -count-prefix="count.": Default prefix for counts (note the trailing dot)
   -debug=false: print statistics sent to graphite
   -default-ttl=10: Default TTL
-  -flush-interval=2: Flush interval (seconds)
-  -flush-delay=1: Flush delay (seconds).  This is a sort of "cool off" period for new metrics coming into a given second.
+  -flush-delay=1: Delay before flushing data to Graphite (seconds)
+  -flush-interval=2: Flush to Graphite interval (seconds)
   -graphite="127.0.0.1:2003": Graphite service address
+  -graphite-timeout=10: Default Graphite write timeout
   -maxprocs=2: Default max number of OS processes
-  -mean-prefix="mean.": Default prefix for means
+  -mean-prefix="mean.": Default prefix for means (note the trailing dot)
   -metric-prefix="": Default Graphite Prefix
   -profilemode=false: Turn on app profiling
   -version=false: print version string
@@ -57,3 +58,19 @@ You can observe internal metrics about the process by connecting to the local we
 
 * ```/metrics``` - Internal statistics on what the service is doing
 * ```/debug/vars``` - Lower level go statistcs about the service
+
+# TODO
+
+* Add testing.
+* Make bucket sizes configurable per metric prefix and/or metric name.  Splitting this out into a JSON config structure is probably the most logical thing to do here.
+* Add support for more types of calculations (percentiles, etc.). JSON driven configuration probably drives this too.
+
+# Licence
+
+Copyright © 2015 iovation Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
