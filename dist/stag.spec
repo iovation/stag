@@ -1,9 +1,7 @@
-%define debug_package %{nil}
-
 Name:     stag
 Version:  0.4.4
 Release:  0.1.%{?dist}
-Summary:  Stag - Statistics Aggregator
+Summary:  Statistics Aggregator
 
 Group:      iovation, inc.
 License:    Proprietary
