@@ -29,7 +29,7 @@ cd src ; gb build all
 %install
 %{__mkdir} -p $RPM_BUILD_ROOT%{prefix}/etc/init.d $RPM_BUILD_ROOT%{prefix}/etc/sysconfig $RPM_BUILD_ROOT%{prefix}/usr/local/stag/bin
 %{__install} -p -m 755 bin/stag $RPM_BUILD_ROOT%{prefix}/usr/local/stag/bin
-%{__install} -p -m 755 dist/etc-init.d-stag $RPM_BUILD_ROOT%{prefix}/etc/init.d
+%{__install} -p -m 755 dist/etc-init.d-stag $RPM_BUILD_ROOT%{prefix}/etc/init.d/stag
 %{__install} -p -m 644 dist/etc-sysconfig-stag $RPM_BUILD_ROOT%{prefix}/etc/sysconfig/stag
 
 %clean
