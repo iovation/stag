@@ -1,9 +1,7 @@
-%define debug_package %{nil}
-
 Name:     stag
 Version:  0.4.4
-Release:  2
-Summary:  Stag - Statistics Aggregator
+Release:  0.1.%{?dist}
+Summary:  Statistics Aggregator
 
 Group:      iovation, inc.
 License:    Proprietary
@@ -29,6 +27,8 @@ cd src ; gb build all
 %install
 %{__mkdir} -p $RPM_BUILD_ROOT%{prefix}/etc/init.d $RPM_BUILD_ROOT%{prefix}/etc/sysconfig $RPM_BUILD_ROOT%{prefix}/usr/local/stag/bin
 %{__install} -p -m 755 bin/stag $RPM_BUILD_ROOT%{prefix}/usr/local/stag/bin
+%{__install} -p -m 755 dist/etc-init.d-stag $RPM_BUILD_ROOT%{prefix}/etc/init.d
+%{__install} -p -m 755 dist/etc-etc-sysconfig-stag $RPM_BUILD_ROOT%{prefix}/etc/sysconfig/stag
 
 %clean
 rm -rf $RPM_BUILD_ROOT
@@ -37,3 +37,5 @@ rm -rf $RPM_BUILD_ROOT
 %defattr(-,root,root,-)
 %doc
 %{prefix}/usr/*
+%{prefix}/etc/init.d/stag
+%config /etc/sysconfig/stag
