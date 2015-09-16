@@ -2,7 +2,7 @@
 
 Name:     stag
 Version:  0.4.4
-Release:  %{?dist}
+Release:  0.1.%{?dist}
 Summary:  Stag - Statistics Aggregator
 
 Group:      iovation, inc.
