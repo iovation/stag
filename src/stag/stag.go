@@ -24,7 +24,7 @@ import (
 	"time"
 )
 
-const VERSION = "0.4.5"
+const VERSION = "0.4.6"
 
 var signalchan chan os.Signal
 
