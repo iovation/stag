@@ -1,6 +1,16 @@
 # Stag Changelog
 
+## 0.4.6
+
+* Added logfile parameter and capability to write to logs.
+
+## 0.4.5
+
+* Packaging fixes, included init script and sysconfig file in dist dir
+
 ## 0.4.4
+
+* Added Cassandra write timeout to allow configurability of Graphite connection deadline
 
 ## 0.4.3
 

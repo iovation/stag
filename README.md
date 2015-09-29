@@ -44,6 +44,7 @@ Usage of stag:
   -flush-interval=2: Flush to Graphite interval (seconds)
   -graphite="127.0.0.1:2003": Graphite service address
   -graphite-timeout=10: Default Graphite write timeout
+  -logfile="": Log File path (defaults to stdout)
   -maxprocs=2: Default max number of OS processes
   -mean-prefix="mean.": Default prefix for means (note the trailing dot)
   -metric-prefix="": Default Graphite Prefix

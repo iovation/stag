@@ -24,7 +24,7 @@ import (
 	"time"
 )
 
-const VERSION = "0.4.4"
+const VERSION = "0.4.6"
 
 var signalchan chan os.Signal
 
@@ -39,21 +39,22 @@ TODO: We should make use of pprof's HTTP server option to expose stats on runnin
 		instances when in debug mode: https://golang.org/pkg/net/http/pprof/
 */
 var (
-	serviceAddress       = flag.String("address", "0.0.0.0:8126", "UDP service address")
-	webAddress           = flag.String("webAddress", "127.0.0.1:8127", "HTTP stats interface")
+	bucketPrefix         = flag.String("bucket-prefix", "bucket.", "Default prefix for buckets (note the trailing dot)")
+	countPrefix          = flag.String("count-prefix", "count.", "Default prefix for counts (note the trailing dot)")
+	debug                = flag.Bool("debug", false, "print statistics sent to graphite")
+	defaultTTL           = flag.Int("default-ttl", 10, "Default TTL")
+	flushDelay           = flag.Int("flush-delay", 1, "Delay before flushing data to Graphite (seconds)")
+	flushInterval        = flag.Int("flush-interval", 2, "Flush to Graphite interval (seconds)")
 	graphiteAddress      = flag.String("graphite", "127.0.0.1:2003", "Graphite service address")
 	graphitePrefix       = flag.String("metric-prefix", "", "Default Graphite Prefix")
 	graphiteWriteTimeout = flag.Int("graphite-timeout", 10, "Default Graphite write timeout")
-	flushInterval        = flag.Int("flush-interval", 2, "Flush to Graphite interval (seconds)")
-	flushDelay           = flag.Int("flush-delay", 1, "Delay before flushing data to Graphite (seconds)")
-	defaultTTL           = flag.Int("default-ttl", 10, "Default TTL")
-	debug                = flag.Bool("debug", false, "print statistics sent to graphite")
-	showVersion          = flag.Bool("version", false, "print version string")
-	meanPrefix           = flag.String("mean-prefix", "mean.", "Default prefix for means (note the trailing dot)")
-	countPrefix          = flag.String("count-prefix", "count.", "Default prefix for counts (note the trailing dot)")
-	bucketPrefix         = flag.String("bucket-prefix", "bucket.", "Default prefix for buckets (note the trailing dot)")
+	logFilePath          = flag.String("logfile", "", "Log File path (defaults to stdout)")
 	maxProcs             = flag.Int("maxprocs", 2, "Default max number of OS processes")
+	meanPrefix           = flag.String("mean-prefix", "mean.", "Default prefix for means (note the trailing dot)")
 	profileMode          = flag.Bool("profilemode", false, "Turn on app profiling")
+	serviceAddress       = flag.String("address", "0.0.0.0:8126", "UDP service address")
+	showVersion          = flag.Bool("version", false, "print version string")
+	webAddress           = flag.String("webAddress", "127.0.0.1:8127", "HTTP stats interface")
 )
 
 var (
@@ -421,11 +422,21 @@ func SubmitLoop(FlushTicker *time.Ticker, metricTouchList map[string]time.Time) 
 
 func main() {
 	flag.Parse()
+
 	if *showVersion {
 		fmt.Printf("stag v%s\n", VERSION)
 		return
-	} else {
-		log.Printf("stag v%s starting\n", VERSION)
+	}
+
+	log.Printf("stag v%s starting\n", VERSION)
+
+	if *logFilePath != "" {
+		f, err := os.OpenFile(*logFilePath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+		if err != nil {
+			log.Fatalf("Error opening log file: %v", err)
+		}
+		defer f.Close()
+		log.SetOutput(f)
 	}
 
 	runtime.GOMAXPROCS(*maxProcs)
