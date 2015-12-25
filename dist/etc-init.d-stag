@@ -24,12 +24,13 @@ FLUSH_INTERVAL="2"
 GRAPHITE_HOST="127.0.0.1:2003"
 GRAPHITE_TIMEOUT="10"
 MAXPROCS="2"
-METRIC_PREFIX="" 
+METRIC_PREFIX=""
+LOGFILE="/var/log/stag.log"
 [ -r /etc/sysconfig/$NAME ] && . /etc/sysconfig/$NAME
 
 DAEMON=$DAEMON_PATH/bin/stag
 
-DAEMONOPTS="-address=$ADDRESS -webAddress=$WEB_ADDRESS -bucket-prefix=$BUCKET_PREFIX -mean-prefix=$MEAN_PREFIX -count-prefix=$COUNT_PREFIX -flush-interval=$FLUSH_INTERVAL -flush-delay=$FLUSH_DELAY -graphite=$GRAPHITE_HOST -graphite-timeout=$GRAPHITE_TIMEOUT -maxprocs=$MAXPROCS -metric-prefix=$METRIC_PREFIX"
+DAEMONOPTS="-address=$ADDRESS -webAddress=$WEB_ADDRESS -bucket-prefix=$BUCKET_PREFIX -mean-prefix=$MEAN_PREFIX -count-prefix=$COUNT_PREFIX -flush-interval=$FLUSH_INTERVAL -flush-delay=$FLUSH_DELAY -graphite=$GRAPHITE_HOST -graphite-timeout=$GRAPHITE_TIMEOUT -logfile=$LOGFILE -maxprocs=$MAXPROCS -metric-prefix=$METRIC_PREFIX"
 
 case "$1" in
 start)
