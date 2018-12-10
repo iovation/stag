@@ -1,2 +1,5 @@
 bin/*
 pkg/*
+log/*
+profiles/*
+profile*

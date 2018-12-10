@@ -7,11 +7,10 @@ import (
 	_ "expvar" // Exposes metrics under http://localhost/debug/vars
 	"flag"
 	"fmt"
-	"github.com/codahale/metrics"
-	"github.com/davecheney/profile"
 	"log"
 	"net"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"regexp"
@@ -22,11 +21,12 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	metrics "github.com/codahale/metrics"
 )
 
-const VERSION = "0.4.6"
-
-var signalchan chan os.Signal
+//VERSION is the application release number
+const VERSION = "0.5.0"
 
 /*
 TODO: A bunch of these flags (c/s)hould get turned into config file params.
@@ -51,10 +51,9 @@ var (
 	logFilePath          = flag.String("logfile", "", "Log File path (defaults to stdout)")
 	maxProcs             = flag.Int("maxprocs", 2, "Default max number of OS processes")
 	meanPrefix           = flag.String("mean-prefix", "mean.", "Default prefix for means (note the trailing dot)")
-	profileMode          = flag.Bool("profilemode", false, "Turn on app profiling")
 	serviceAddress       = flag.String("address", "0.0.0.0:8126", "UDP service address")
-	showVersion          = flag.Bool("version", false, "print version string")
-	webAddress           = flag.String("webAddress", "127.0.0.1:8127", "HTTP stats interface")
+	showVersion          = flag.Bool("version", false, "print version string and exit")
+	webAddress           = flag.String("webAddress", "0.0.0.0:8127", "HTTP stats interface")
 )
 
 var (
@@ -65,7 +64,7 @@ var (
 	statIncomingConnectionCount = metrics.Counter("incoming_connection_count")
 )
 
-// Type for a single incoming metric
+//Metric is type for a single incoming metric
 type Metric struct {
 	Prefix string  // The Graphite prefix of the metric
 	Name   string  // Graphite name of the metric
@@ -73,6 +72,7 @@ type Metric struct {
 	Epoch  int64   // epoch of time slice (i.e. events happened here)
 }
 
+//MetricsIn
 var (
 	MetricsIn      = make(chan *Metric)
 	SubmitBuffer   = make(chan *TimeSlice, 1000)
@@ -82,7 +82,7 @@ var (
 	MetricMapMutex = &sync.RWMutex{}
 )
 
-// Slice of metric data for a given period of time
+//TimeSlice is slice of metric data for a given period of time
 type TimeSlice struct {
 	Prefix string    // Graphite prefix for the metric
 	Name   string    // Graphite name of the metric
@@ -92,7 +92,7 @@ type TimeSlice struct {
 	// TTL    *time.Timer // TTL timer for the slice
 }
 
-// Used to create a new TimeSlice
+//Create is used to create a new TimeSlice
 func (t *TimeSlice) Create(m *Metric) {
 	t.Prefix = m.Prefix
 	t.Name = m.Name
@@ -111,14 +111,17 @@ func (t *TimeSlice) Add(v float64) {
 	// t.TTL.Reset(time.Duration(*defaultTTL) * time.Second)
 }
 
+// MetricCalculator calculates metrics
 type MetricCalculator interface {
 	Value() float64
 }
 
+//MeanContents contains values
 type MeanContents struct {
 	values []float64
 }
 
+//Value of MeanContents
 func (a MeanContents) Value() float64 {
 	sum := float64(0.0)
 	length := len(a.values)
@@ -128,22 +131,28 @@ func (a MeanContents) Value() float64 {
 	return sum / float64(length)
 }
 
+//CountContents contains values
 type CountContents struct {
 	values []float64
 }
 
+//Value returns values
 func (c CountContents) Value() float64 {
 	return float64(len(c.values))
 }
 
+//BucketResults contains buckets
 type BucketResults struct {
 	buckets map[float64]float64
 }
+
+//BucketsAndValues contains buckets and values
 type BucketsAndValues struct {
 	buckets []float64
 	values  []float64
 }
 
+//BucketedResults return bucketed results
 func BucketedResults(h BucketsAndValues) map[float64]float64 {
 	br := make(map[float64]float64)
 	sort.Float64s(h.buckets) // Sort the buckets so we can go over them small to big
@@ -161,10 +170,10 @@ func BucketedResults(h BucketsAndValues) map[float64]float64 {
 		for _, v := range h.values {
 			if bindex+1 != len(h.buckets) {
 				if v >= b && v < h.buckets[bindex+1] {
-					br[b] += 1
+					br[b]++
 				}
 			} else if v >= b {
-				br[b] += 1
+				br[b]++
 			}
 		}
 	}
@@ -172,7 +181,7 @@ func BucketedResults(h BucketsAndValues) map[float64]float64 {
 	return br
 }
 
-// A slice container that contains a ticker for iteration
+//SliceContainer contains a ticker for iteration
 type SliceContainer struct {
 	Name     string               // Graphite name of the metric
 	SliceMap map[int64]*TimeSlice // Time Slices for this metric
@@ -182,6 +191,7 @@ type SliceContainer struct {
 	Input        chan *Metric    // Input channel for new Metrics
 }
 
+//Create creates a SliceContainer
 func (s *SliceContainer) Create(m *Metric) {
 	go func() {
 		for {
@@ -194,6 +204,7 @@ func (s *SliceContainer) Create(m *Metric) {
 	}()
 }
 
+//Add adds a metric to SliceContainer
 func (s *SliceContainer) Add(m *Metric) {
 	_, present := s.SliceMap[m.Epoch]
 	if present == true {
@@ -204,6 +215,7 @@ func (s *SliceContainer) Add(m *Metric) {
 	}
 }
 
+//CalculateSlices calcuates a slice
 func CalculateSlices() {
 	// TODO: Submit pickled data to Graphite for performance.
 	for {
@@ -309,6 +321,7 @@ func parseMessage(line string) []*Metric {
 	return output
 }
 
+//ConnectToGraphite connects to a graphite host
 func ConnectToGraphite() {
 	errCh := make(chan error)
 
@@ -331,6 +344,7 @@ func ConnectToGraphite() {
 	}
 }
 
+//SubmitToGraphite submits metrics to the connected graphite host
 func SubmitToGraphite(client net.Conn, errCh chan error) {
 	for {
 		datain := <-GraphiteOut
@@ -340,7 +354,7 @@ func SubmitToGraphite(client net.Conn, errCh chan error) {
 
 		err := client.SetWriteDeadline(time.Now().Add(time.Duration(*graphiteWriteTimeout) * time.Second))
 		if err != nil {
-			log.Println("SetWriteDeadline failed: %v\n", err)
+			log.Printf("SetWriteDeadline failed: %v\n", err)
 		}
 
 		_, err = client.Write(data)
@@ -353,21 +367,23 @@ func SubmitToGraphite(client net.Conn, errCh chan error) {
 	}
 }
 
+//MetricsHandler reads a request and writes a response
 func MetricsHandler(w http.ResponseWriter, r *http.Request) {
 	c, g := metrics.Snapshot()
 	cJSON, err := json.Marshal(c)
 	if err != nil {
-		log.Println("ERROR formatting JSON for counts: %v", err)
+		log.Printf("ERROR formatting JSON for counts: %v", err)
 	}
 	gJSON, err := json.Marshal(g)
 	if err != nil {
-		log.Println("ERROR formatting JSON for gauges: %v", err)
+		log.Printf("ERROR formatting JSON for gauges: %v", err)
 	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	fmt.Fprintf(w, "{ \"counts\": %s,\n \"gauges\": %s }", string(cJSON), string(gJSON))
 }
 
+//RunWebServer starts an HTTP listener
 func RunWebServer() {
 	sock, err := net.Listen("tcp", *webAddress)
 	if err != nil {
@@ -378,6 +394,7 @@ func RunWebServer() {
 	http.Serve(sock, nil)
 }
 
+//TTLLoop ...
 func TTLLoop() {
 	ttlTicker := time.NewTicker(time.Second * 5)
 	for {
@@ -398,11 +415,12 @@ func TTLLoop() {
 	}
 }
 
+//SubmitLoop ...
 func SubmitLoop(FlushTicker *time.Ticker, metricTouchList map[string]time.Time) {
 	for {
 		<-FlushTicker.C // TODO: Split this out into a goroutine?
 	FlushLoop:
-		for metricName, _ := range metricTouchList {
+		for metricName := range metricTouchList {
 			MetricMapMutex.Lock()
 			for epoch, updateTime := range MetricMap[metricName].ActiveSlices { // Submit the slice(s) that have been recently updated
 				if (time.Now().Unix() - int64(*flushDelay)) > updateTime {
@@ -441,19 +459,22 @@ func main() {
 
 	runtime.GOMAXPROCS(*maxProcs)
 
-	if *profileMode {
-		profileCfg := profile.Config{
-			CPUProfile: true,
-			MemProfile: true,
-		}
-		defer profile.Start(&profileCfg).Stop()
-	}
-
 	if *graphitePrefix != "" {
 		*graphitePrefix = fmt.Sprintf("%s.", *graphitePrefix)
 	}
-	signalchan = make(chan os.Signal, 1)
-	signal.Notify(signalchan, syscall.SIGTERM)
+	var gracefulStop = make(chan os.Signal)
+	signal.Notify(gracefulStop, syscall.SIGTERM)
+	signal.Notify(gracefulStop, syscall.SIGINT)
+	go func() {
+		sig := <-gracefulStop
+		fmt.Printf("caught sig: %+v", sig)
+		fmt.Printf("\n!! Caught signal %d... shutting down\n", sig)
+		fmt.Println("Waiting 2 seconds to finish processing")
+		time.Sleep(2 * time.Second)
+		log.Printf("!! Caught signal %d... shutting down\n", sig)
+		//TODO: Deal with submitting metrics before shutting down
+		os.Exit(0)
+	}()
 
 	FlushTicker := time.NewTicker(time.Duration(*flushInterval) * time.Second)
 	// TODO: Collect metrics on number of keys in the metric map
@@ -464,12 +485,8 @@ func main() {
 		keys in the map that are haven't been updated in the TTL window) */
 		for {
 			select {
-			case sig := <-signalchan:
-				log.Printf("!! Caught signal %d... shutting down\n", sig)
-				//TODO: Deal with submitting metrics before shutting down
-				return
 			case metric := <-MetricsIn:
-				var mn string = metric.Prefix + metric.Name
+				var mn = metric.Prefix + metric.Name
 				MetricMapMutex.RLock()
 				_, present := MetricMap[mn]
 				MetricMapMutex.RUnlock()

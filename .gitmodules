@@ -1,9 +1,0 @@
-[submodule "vendor/src/github.com/codahale/hdrhistogram"]
-	path = vendor/src/github.com/codahale/hdrhistogram
-	url = https://github.com/codahale/hdrhistogram
-[submodule "vendor/src/github.com/codahale/metrics"]
-	path = vendor/src/github.com/codahale/metrics
-	url = https://github.com/codahale/metrics
-[submodule "vendor/src/github.com/davecheney/profile"]
-	path = vendor/src/github.com/davecheney/profile
-	url = https://github.com/davecheney/profile
