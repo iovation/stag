@@ -1,5 +1,6 @@
 bin/*
 pkg/*
 log/*
-profiles/*
-profile*
+stag
+stag.log
+stag*.go
