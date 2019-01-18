@@ -276,13 +276,14 @@ func handleConnection(conn net.Conn) {
 	}
 }
 
+var packetRegexp = regexp.MustCompile("^([^:]+):([^:]+):([0-9.]+)(g)@([0-9]+)$")
+
 // Grabbed from stasdaemon.go
 func parseMessage(line string) []*Metric {
 	// Example message: metric_prefix:some.metric:1.24g:1415833364
 
 	/* TODO: Evaluate something like the bitly statsdaemon style byte parser:
 	https://github.com/bitly/statsdaemon/commit/c1816f025d3ccec416dc11098605087a6d7e138d */
-	var packetRegexp = regexp.MustCompile("^([^:]+):([^:]+):([0-9.]+)(g)@([0-9]+)$")
 	var output []*Metric
 	var valueErr, epochErr error
 	if line != "" {
