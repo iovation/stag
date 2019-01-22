@@ -74,13 +74,26 @@ type Metric struct {
 
 //MetricsIn
 var (
-	MetricsIn      = make(chan *Metric)
-	SubmitBuffer   = make(chan *TimeSlice, 1000)
-	GraphiteOut    = make(chan string)
-	ValueBuckets   = []float64{0, 0.125, 0.5, 1, 2, 5}
-	MetricMap      = make(map[string]*SliceContainer)
-	MetricMapMutex = &sync.RWMutex{}
+	MetricsIn    = make(chan *Metric)
+	SubmitBuffer = make(chan *TimeSlice, 1000)
+	GraphiteOut  = make(chan string)
+	ValueBuckets = []float64{0, 0.125, 0.5, 1, 2, 5}
 )
+
+//MetricStore ...
+type MetricStore struct {
+	sync.RWMutex
+	Map   map[string]*SliceContainer
+	Touch map[string]time.Time
+}
+
+//CreateMetricStore ...
+func CreateMetricStore() *MetricStore {
+	return &MetricStore{
+		Map:   make(map[string]*SliceContainer),
+		Touch: make(map[string]time.Time),
+	}
+}
 
 //TimeSlice is slice of metric data for a given period of time
 type TimeSlice struct {
@@ -183,6 +196,7 @@ func BucketedResults(h BucketsAndValues) map[float64]float64 {
 
 //SliceContainer contains a ticker for iteration
 type SliceContainer struct {
+	sync.Mutex
 	Name     string               // Graphite name of the metric
 	SliceMap map[int64]*TimeSlice // Time Slices for this metric
 	//TODO: Should ActiveSlices be named something more like RecentEpochs?
@@ -196,23 +210,22 @@ func (s *SliceContainer) Create(m *Metric) {
 	go func() {
 		for {
 			i := <-s.Input
-			MetricMapMutex.Lock()
 			s.Add(i)
 			s.ActiveSlices[i.Epoch] = time.Now().Unix()
-			MetricMapMutex.Unlock()
 		}
 	}()
 }
 
 //Add adds a metric to SliceContainer
 func (s *SliceContainer) Add(m *Metric) {
-	_, present := s.SliceMap[m.Epoch]
-	if present == true {
+	s.Lock()
+	if _, ok := s.SliceMap[m.Epoch]; ok {
 		s.SliceMap[m.Epoch].Add(m.Value)
-		s.ActiveSlices[m.Epoch] = time.Now().Unix()
+		s.ActiveSlices[m.Epoch] = time.Now()
 	} else {
 		log.Println("Missing epoch ", m.Epoch, " - Some data will be missing from the aggregate!")
 	}
+	s.Unlock()
 }
 
 //CalculateSlices calcuates a slice
@@ -396,46 +409,52 @@ func RunWebServer() {
 }
 
 //TTLLoop ...
-func TTLLoop() {
+func (ms *MetricStore) TTLLoop() {
 	ttlTicker := time.NewTicker(time.Second * 5)
 	for {
 		<-ttlTicker.C
 		// log.Println("TTLLoop firing")
-		MetricMapMutex.Lock()
-		for _, sliceContainer := range MetricMap {
+		ms.RLock()
+		for _, sliceContainer := range ms.Map {
+			sliceContainer.Lock()
 			for epoch, slice := range sliceContainer.SliceMap {
-				if _, present := sliceContainer.ActiveSlices[epoch]; present { // If the slice is not submitted yet it'll still be in ActiveSlices
+				if _, ok := sliceContainer.ActiveSlices[epoch]; ok { // If the slice is not submitted yet it'll still be in ActiveSlices
 					continue
 				}
 				if slice.TTL.Before(time.Now().Add(time.Duration(*defaultTTL*-1) * time.Second)) {
 					delete(sliceContainer.SliceMap, epoch)
 				}
 			}
+			sliceContainer.Unlock()
 		}
-		MetricMapMutex.Unlock()
+		ms.RUnlock()
 	}
 }
 
 //SubmitLoop ...
-func SubmitLoop(FlushTicker *time.Ticker, metricTouchList map[string]time.Time) {
+func (ms *MetricStore) SubmitLoop() {
+	flushTicker := time.NewTicker(time.Duration(*flushInterval) * time.Second)
 	for {
-		<-FlushTicker.C // TODO: Split this out into a goroutine?
+		<-flushTicker.C // TODO: Split this out into a goroutine?
+		ms.Lock()
 	FlushLoop:
-		for metricName := range metricTouchList {
-			MetricMapMutex.Lock()
-			for epoch, updateTime := range MetricMap[metricName].ActiveSlices { // Submit the slice(s) that have been recently updated
-				if (time.Now().Unix() - int64(*flushDelay)) > updateTime {
-					SubmitBuffer <- MetricMap[metricName].SliceMap[epoch]
+		for metricName := range ms.Touch {
+			sc := ms.Map[metricName]
+			sc.Lock()
+			for epoch, updateTime := range sc.ActiveSlices { // Submit the slice(s) that have been recently updated
+				if time.Since(updateTime) > time.Duration(*flushDelay) {
+					SubmitBuffer <- sc.SliceMap[epoch]
 					// submit(MetricMap[metricName].SliceMap[epoch])
-					delete(MetricMap[metricName].ActiveSlices, epoch)
+					delete(sc.ActiveSlices, epoch)
 				} else {
-					MetricMapMutex.Unlock()
+					sc.Unlock()
 					continue FlushLoop
 				}
 			}
-			MetricMapMutex.Unlock()
-			delete(metricTouchList, metricName)
+			sc.Unlock()
+			delete(ms.Touch, metricName)
 		}
+		ms.Unlock()
 	}
 }
 
@@ -477,51 +496,43 @@ func main() {
 		os.Exit(0)
 	}()
 
-	FlushTicker := time.NewTicker(time.Duration(*flushInterval) * time.Second)
 	// TODO: Collect metrics on number of keys in the metric map
 	// TODO: Turn metricTouchList into a heap with pop and push methods
-	metricTouchList := make(map[string]time.Time) // metric name along with time updated
+	ms := CreateMetricStore()
 	go func() {
 		/* TODO: Add MetricMap cleanup functionality (ie cleaning up old
 		keys in the map that are haven't been updated in the TTL window) */
 		for {
-			select {
-			case metric := <-MetricsIn:
-				var mn = metric.Prefix + metric.Name
-				MetricMapMutex.RLock()
-				_, present := MetricMap[mn]
-				MetricMapMutex.RUnlock()
-				// Do all the stuff to initalize the new Metric
-				if present != true {
-					MetricMapMutex.Lock()
-					// Create a new SliceContainer for that epoch
-					MetricMap[mn] = new(SliceContainer)
-					MetricMap[mn].Name = metric.Name
-					MetricMap[mn].SliceMap = make(map[int64]*TimeSlice)
-					MetricMap[mn].ActiveSlices = make(map[int64]int64)
-					MetricMap[mn].Input = make(chan *Metric)
-					MetricMap[mn].Create(metric)
-					MetricMapMutex.Unlock()
-				}
-
-				// Initialize bit bits for a new epoch in the metric we've received
-				MetricMapMutex.RLock()
-				_, Epresent := MetricMap[mn].SliceMap[metric.Epoch]
-				MetricMapMutex.RUnlock()
-				if Epresent != true {
-					MetricMapMutex.Lock()
-					MetricMap[mn].SliceMap[metric.Epoch] = new(TimeSlice)
-					MetricMap[mn].SliceMap[metric.Epoch].Create(metric)
-					MetricMapMutex.Unlock()
-				}
-				MetricMap[mn].Input <- metric
-				metricTouchList[mn] = time.Now()
+			metric := <-MetricsIn
+			mn := metric.Prefix + metric.Name
+			ms.RLock()
+			sc, ok := ms.Map[mn]
+			ms.RUnlock()
+			// Do all the stuff to initalize the new Metric
+			if !ok {
+				ms.Lock()
+				// Create a new SliceContainer for that epoch
+				sc = CreateSliceContainer(metric)
+				go sc.Loop(metric)
+				ms.Map[mn] = sc
+				ms.Unlock()
 			}
+
+			// Initialize bits for a new epoch in the metric we've received
+			sc.Lock()
+			if _, ok := sc.SliceMap[metric.Epoch]; !ok {
+				sc.SliceMap[metric.Epoch] = CreateTimeSlice(metric)
+			}
+			sc.Unlock()
+			sc.Input <- metric
+			ms.Lock()
+			ms.Touch[mn] = time.Now()
+			ms.Unlock()
 		}
 	}()
 
-	go TTLLoop()
-	go SubmitLoop(FlushTicker, metricTouchList)
+	go ms.SubmitLoop()
+	go ms.TTLLoop()
 	go CalculateSlices()
 	go RunWebServer()
 	go ConnectToGraphite()
