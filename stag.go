@@ -357,11 +357,11 @@ func ConnectToGraphite() {
 			continue
 		} else {
 			log.Printf("Connected to Graphite: %s\n", *graphiteAddress)
-			defer client.Close()
 		}
 		go SubmitToGraphite(client, errCh)
 		err = <-errCh
 		if err != nil {
+			client.Close()
 			continue
 		}
 	}
