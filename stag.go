@@ -105,15 +105,14 @@ type TimeSlice struct {
 	// TTL    *time.Timer // TTL timer for the slice
 }
 
-//Create is used to create a new TimeSlice
-func (t *TimeSlice) Create(m *Metric) {
-	t.Prefix = m.Prefix
-	t.Name = m.Name
-	t.Epoch = m.Epoch
-	// README: Keep me in sync with the time under the Add method
-	// t.TTL = time.NewTimer(time.Duration(*defaultTTL) * time.Second)
-	t.TTL = time.Now()
-	t.Values = make([]float64, 0)
+//CreateTimeSlice ...
+func CreateTimeSlice(m *Metric) *TimeSlice {
+	return &TimeSlice{
+		Prefix: m.Prefix,
+		Name:   m.Name,
+		Epoch:  m.Epoch,
+		TTL:    time.Now(),
+	}
 }
 
 // Add a value to a TimeSlice
