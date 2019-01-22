@@ -200,19 +200,29 @@ type SliceContainer struct {
 	SliceMap map[int64]*TimeSlice // Time Slices for this metric
 	//TODO: Should ActiveSlices be named something more like RecentEpochs?
 	//TODO: Should ActiveSlices be a map or a slice?
-	ActiveSlices map[int64]int64 // Set of *active* (timeslices are removed from this after they've been submitted, and re-added after new data comes in)
-	Input        chan *Metric    // Input channel for new Metrics
+	ActiveSlices map[int64]time.Time // Set of *active* (timeslices are removed from this after they've been submitted, and re-added after new data comes in)
+	Input        chan *Metric        // Input channel for new Metrics
 }
 
-//Create creates a SliceContainer
-func (s *SliceContainer) Create(m *Metric) {
-	go func() {
-		for {
-			i := <-s.Input
-			s.Add(i)
-			s.ActiveSlices[i.Epoch] = time.Now().Unix()
+//CreateSliceContainer ...
+func CreateSliceContainer(m *Metric) *SliceContainer {
+	return &SliceContainer{
+		Name:         m.Name,
+		SliceMap:     make(map[int64]*TimeSlice),
+		ActiveSlices: make(map[int64]time.Time),
+		Input:        make(chan *Metric),
+	}
+}
+
+//Loop ...
+func (s *SliceContainer) Loop(m *Metric) {
+	for {
+		i, ok := <-s.Input
+		if !ok {
+			return
 		}
-	}()
+		s.Add(i)
+	}
 }
 
 //Add adds a metric to SliceContainer
