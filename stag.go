@@ -26,7 +26,7 @@ import (
 )
 
 //VERSION is the application release number
-const VERSION = "0.5.0"
+const VERSION = "0.5.1"
 
 /*
 TODO: A bunch of these flags (c/s)hould get turned into config file params.
@@ -35,8 +35,6 @@ TODO: A bunch of these flags (c/s)hould get turned into config file params.
 		kinds of output are expected for each kind of metric (count,
 		throughput, histogram, etc.) as well as what prefix each metric type
 		should get.
-TODO: We should make use of pprof's HTTP server option to expose stats on running
-		instances when in debug mode: https://golang.org/pkg/net/http/pprof/
 */
 var (
 	bucketPrefix         = flag.String("bucket-prefix", "bucket.", "Default prefix for buckets (note the trailing dot)")
@@ -470,8 +468,8 @@ func (ms *MetricStore) SubmitLoop() {
 func main() {
 	flag.Parse()
 
+	fmt.Printf("stag v%s\n", VERSION)
 	if *showVersion {
-		fmt.Printf("stag v%s\n", VERSION)
 		return
 	}
 
