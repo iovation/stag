@@ -1,5 +1,10 @@
 # Stag Changelog
 
+## 0.5.1
+
+* updating Go version to current 1.11
+* linting and refactoring
+
 ## 0.4.6
 
 * Added logfile parameter and capability to write to logs.

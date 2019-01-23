@@ -1,7 +1,7 @@
 %define debug_package %{nil}
 
 Name:     stag
-Version:  0.5.0
+Version:  0.5.1
 Release:  %{?dist}
 Summary:  Statistics Aggregator
 
